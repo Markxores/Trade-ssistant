@@ -1,8 +1,8 @@
 streamlit
 pandas
-numpy<2.0.0
+numpy
 yfinance
-https://github.com/twopirllc/pandas-ta/archive/master.zip
+pandas-ta-classic
 requests
 beautifulsoup4
 vaderSentiment

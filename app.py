@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import random
 import yfinance as yf
-import pandas_ta as ta
+import pandas_ta_classic as ta
 import requests
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -26,7 +26,7 @@ INSTRUMENTS = {
         "GBP/CAD": "GBPCAD=X", "GBP/NZD": "GBPNZD=X", "NZD/CAD": "NZDCAD=X", "NZD/CHF": "NZDCHF=X"
     },
     "Global Stock Indices": {
-        "US Dollar Index (DXY)": "DX-Y.NYB",
+        "US Dollar Index (DXY)": "DX=F",
         "US 30 (Dow Jones)": "^DJI",
         "US 500 (S&P 500)": "^GSPC",
         "US Tech 100 (Nasdaq)": "^NDX",
@@ -195,7 +195,7 @@ def calculate_sentiment_score(ticker_symbol, name):
             
             rss_resp = requests.get(rss_url, headers=headers, timeout=5)
             soup = BeautifulSoup(rss_resp.content, features="xml")
-            headlines = soup.findAll("title")
+            headlines = soup.find_all("title")
             
             sentiment_sum = 0
             count = 0
@@ -289,7 +289,7 @@ def calculate_fundamental_score(name, asset_class):
         us_macro_score = get_us_economic_baseline()
 
         # 2. Pull Live Market Proxy Data (Yields, DXY, VIX)
-        macro_tickers = ["^TNX", "DX-Y.NYB", "^VIX"]
+        macro_tickers = ["^TNX", "DX=F", "^VIX"]
         macro_data = yf.download(macro_tickers, period="1mo", progress=False)['Close']
         
         if macro_data.empty or len(macro_data) < 20: 
@@ -300,7 +300,7 @@ def calculate_fundamental_score(name, asset_class):
         
         # Calculate 20-day percentage trends
         tnx_trend = ((current['^TNX'] - past['^TNX']) / past['^TNX']) * 100
-        dxy_trend = ((current['DX-Y.NYB'] - past['DX-Y.NYB']) / past['DX-Y.NYB']) * 100
+        dxy_trend = ((current['DX=F'] - past['DX=F']) / past['DX=F']) * 100
         vix_trend = ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100
         
         # Apply Base Multipliers
@@ -450,10 +450,10 @@ score_cols = [
 # Apply the color style AND force the Master Score to 1 decimal place
 styled_df = (
     df.style
-    .applymap(color_scores, subset=score_cols) 
+    .map(color_scores, subset=score_cols) 
     .format("{:.1f}", subset=["Master Score"]) 
 )
 # Note: If you get a warning about 'applymap' being deprecated, just change it to '.map(color_scores...'
 
 # Display the beautiful, color-coded dashboard
-st.dataframe(styled_df, use_container_width=True, height=600)
+st.dataframe(styled_df, width="stretch")
