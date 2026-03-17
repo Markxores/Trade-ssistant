@@ -303,10 +303,10 @@ def calculate_fundamental_score(name, asset_class):
         dxy_trend = ((current['DX=F'] - past['DX=F']) / past['DX=F']) * 100
         vix_trend = ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100
         
-        # Apply Base Multipliers
-        tnx_weight = tnx_trend * 5
-        dxy_weight = dxy_trend * 10
-        vix_weight = vix_trend * 5
+        # Apply Base Multipliers (Dialed down for normalization)
+        tnx_weight = tnx_trend * 1.5
+        dxy_weight = dxy_trend * 3
+        vix_weight = vix_trend * 1.5
         
         score = 0
         
@@ -336,7 +336,7 @@ def calculate_fundamental_score(name, asset_class):
                 quote_score = get_currency_macro_score(quote)
                 
                 # Synthetic Cross Spread (Works perfectly for EUR/JPY, AUD/CAD, or EUR/USD)
-                score = base_score - quote_score
+                score = (base_score - quote_score) / 2
                 
         elif "Indices" in asset_class:
             # 1. Japanese Indices (Nikkei 225)
