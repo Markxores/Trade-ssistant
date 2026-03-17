@@ -298,10 +298,10 @@ def calculate_fundamental_score(name, asset_class):
         current = macro_data.iloc[-1]
         past = macro_data.iloc[-20]
         
-        # Calculate 20-day percentage trends
-        tnx_trend = ((current['^TNX'] - past['^TNX']) / past['^TNX']) * 100
-        dxy_trend = ((current['DX=F'] - past['DX=F']) / past['DX=F']) * 100
-        vix_trend = ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100
+        # Calculate 20-day percentage trends (Capped to prevent explosive YF data glitches)
+        tnx_trend = max(-30, min(30, ((current['^TNX'] - past['^TNX']) / past['^TNX']) * 100))
+        dxy_trend = max(-20, min(20, ((current['DX=F'] - past['DX=F']) / past['DX=F']) * 100))
+        vix_trend = max(-50, min(50, ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100))
         
         # Apply Base Multipliers (Dialed down for normalization)
         tnx_weight = tnx_trend * 1.5
