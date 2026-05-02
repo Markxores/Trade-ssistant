@@ -2,7 +2,6 @@ streamlit
 pandas<2.2.0
 numpy<2.0.0
 yfinance
-pandas-ta==0.3.14b0
 requests
 beautifulsoup4
 vaderSentiment
