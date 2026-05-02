@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import random
 import yfinance as yf
-import pandas_ta_classic as ta
+import pandas_ta as ta
 import requests
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
