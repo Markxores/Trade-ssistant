@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import random
 import yfinance as yf
-import pandas_ta as ta
+
 import requests
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -70,11 +70,26 @@ def calculate_technical_score(ticker_symbol):
         if df.empty or len(df) < 200:
             return 0  
             
-        df.ta.ema(length=20, append=True)
-        df.ta.sma(length=50, append=True)
-        df.ta.sma(length=200, append=True)
-        df.ta.rsi(length=14, append=True)
-        df.ta.macd(fast=12, slow=26, signal=9, append=True)
+        # --- NATIVE PANDAS TECHNICAL INDICATORS ---
+        # 1. Moving Averages
+        df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['SMA_200'] = df['Close'].rolling(window=200).mean()
+        
+        # 2. RSI (14-Period Wilder's Smoothing)
+        delta = df['Close'].diff()
+        gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        rs = gain / loss
+        df['RSI_14'] = 100 - (100 / (1 + rs))
+        
+        # 3. MACD (12, 26, 9)
+        ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD_12_26_9'] = ema_12 - ema_26
+        df['MACDs_12_26_9'] = df['MACD_12_26_9'].ewm(span=9, adjust=False).mean()
+        df['MACDh_12_26_9'] = df['MACD_12_26_9'] - df['MACDs_12_26_9']
+        # ------------------------------------------
         
         current = df.iloc[-1]
         close = current['Close']
