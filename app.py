@@ -55,8 +55,21 @@ INSTRUMENTS = {
         "US 2-Year T-Note (Futures)": "ZT=F"
     },
     "Crypto": {
-        "BTC/USD": "BTC-USD",
-        "ETH/USD": "ETH-USD"
+        "BTC/USD (Bitcoin)": "BTC-USD",
+        "ETH/USD (Ethereum)": "ETH-USD",
+        "SOL/USD (Solana)": "SOL-USD",
+        "XRP/USD (Ripple)": "XRP-USD",
+        "ADA/USD (Cardano)": "ADA-USD",
+        "DOGE/USD (Dogecoin)": "DOGE-USD",
+        "LINK/USD (Chainlink)": "LINK-USD",
+        "DOT/USD (Polkadot)": "DOT-USD",
+        "LTC/USD (Litecoin)": "LTC-USD",
+        "BCH/USD (Bitcoin Cash)": "BCH-USD",
+        "AVAX/USD (Avalanche)": "AVAX-USD",
+        "MATIC/USD (Polygon)": "MATIC-USD",
+        "UNI/USD (Uniswap)": "UNI7083-USD", 
+        "XLM/USD (Stellar)": "XLM-USD",
+        "ATOM/USD (Cosmos)": "ATOM-USD"
     }
 }
 
@@ -303,9 +316,9 @@ def calculate_fundamental_score(name, asset_class):
         # 1. Pull Real US Economic Data Score (The Anchor)
         us_macro_score = get_us_economic_baseline()
 
-        # 2. Pull Live Market Proxy Data (Yields, DXY, VIX)
-        macro_tickers = ["^TNX", "DX=F", "^VIX"]
-        macro_data = yf.download(macro_tickers, period="1mo", progress=False)['Close']
+        # 2. Pull Live Market Proxy Data (Yields, DXY, VIX, EUR, GBP, JPY, Gold, Oil)
+        macro_tickers = ["^TNX", "DX=F", "^VIX", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GC=F", "CL=F"]
+        macro_data = yf.download(macro_tickers, period="2mo", progress=False)['Close']
         
         if macro_data.empty or len(macro_data) < 20: 
             return 0
@@ -313,15 +326,29 @@ def calculate_fundamental_score(name, asset_class):
         current = macro_data.iloc[-1]
         past = macro_data.iloc[-20]
         
-        # Calculate 20-day percentage trends (Capped to prevent explosive YF data glitches)
+        # --- THE MASTER RISK SWITCH TRIGGER ---
+        current_vix = current['^VIX']
+        is_risk_off = current_vix >= 30  # Threshold for Institutional Panic
+        
+        # Calculate 20-day percentage trends
         tnx_trend = max(-30, min(30, ((current['^TNX'] - past['^TNX']) / past['^TNX']) * 100))
         dxy_trend = max(-20, min(20, ((current['DX=F'] - past['DX=F']) / past['DX=F']) * 100))
         vix_trend = max(-50, min(50, ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100))
+        eur_trend = max(-20, min(20, ((current['EURUSD=X'] - past['EURUSD=X']) / past['EURUSD=X']) * 100))
+        gbp_trend = max(-20, min(20, ((current['GBPUSD=X'] - past['GBPUSD=X']) / past['GBPUSD=X']) * 100))
+        jpy_trend = max(-20, min(20, ((current['USDJPY=X'] - past['USDJPY=X']) / past['USDJPY=X']) * 100))
+        gold_trend = max(-20, min(20, ((current['GC=F'] - past['GC=F']) / past['GC=F']) * 100))
+        oil_trend = max(-30, min(30, ((current['CL=F'] - past['CL=F']) / past['CL=F']) * 100))
         
-        # Apply Base Multipliers (Dialed down for normalization)
+        # Apply Base Multipliers
         tnx_weight = tnx_trend * 1.5
         dxy_weight = dxy_trend * 3
         vix_weight = vix_trend * 1.5
+        eur_weight = eur_trend * 2.0
+        gbp_weight = gbp_trend * 2.0
+        jpy_weight = jpy_trend * 2.0  # Positive means USD is strong / JPY is weak
+        gold_weight = gold_trend * 2.0
+        oil_weight = oil_trend * 2.0
         
         score = 0
         
@@ -329,57 +356,88 @@ def calculate_fundamental_score(name, asset_class):
         
         if "Forex" in asset_class:
             def get_currency_macro_score(currency):
-                # THE US DOLLAR ANCHOR: We inject the us_macro_score into every currency, 
-                # but adjust HOW sensitive that currency is to the US economy.
-                if currency in ["JPY", "CHF"]:
-                    # Safe havens are crushed by strong US rates and a booming US economy.
-                    return vix_weight - tnx_weight - (us_macro_score * 1.5)      
-                elif currency in ["AUD", "NZD", "CAD"]:
-                    # Risk currencies hate a strong USD, but LIKE strong US GDP (global growth).
-                    return -vix_weight - dxy_weight + (us_macro_score * 0.5)     
-                elif currency in ["EUR", "GBP"]:
-                    # Core majors generally move opposite to US economic strength.
-                    return -dxy_weight - us_macro_score                  
+                base_score = 0
+                
+                # 1. THE COMMODITY ANCHORS (AUD, NZD, CAD) - 50% Primary Driver
+                if currency == "CAD":
+                    base_score = (oil_weight * 1.25) + (us_macro_score * 1.0) - dxy_weight - vix_weight
+                elif currency in ["AUD", "NZD"]:
+                    base_score = (gold_weight * 1.25) + (us_macro_score * 0.8) - dxy_weight - vix_weight
+                    
+                # 2. THE MOMENTUM MAJORS (EUR, GBP, JPY)
+                elif currency == "EUR":
+                    base_score = (eur_weight * 1.5) - dxy_weight - tnx_weight
+                elif currency == "GBP":
+                    base_score = (gbp_weight * 1.5) - dxy_weight - tnx_weight
+                elif currency == "JPY":
+                    base_score = -(jpy_weight * 1.5) - tnx_weight - (us_macro_score * 1.0)
+                    
+                # 3. THE SAFE HAVEN (CHF)
+                elif currency == "CHF":
+                    base_score = vix_weight - tnx_weight - us_macro_score
+                    
+                # 4. THE BASELINE (USD)
                 elif currency == "USD":
-                    # The Anchor itself.
-                    return dxy_weight + tnx_weight + us_macro_score      
-                return 0
+                    base_score = dxy_weight + tnx_weight + us_macro_score
+                
+                # --- RISK REGIME OVERRIDE FOR FOREX ---
+                if is_risk_off:
+                    if currency in ["JPY", "CHF", "USD"]: 
+                        base_score += 50  # Capital flies into safe havens
+                    elif currency in ["AUD", "NZD", "CAD"]: 
+                        base_score -= 50  # Capital abandons commodity/risk currencies
+                    elif currency in ["EUR", "GBP"]: 
+                        base_score -= 20  # Core majors suffer moderate sell-offs
+                        
+                return base_score
                 
             if "/" in name:
                 base, quote = name.split("/")
-                base_score = get_currency_macro_score(base)
-                quote_score = get_currency_macro_score(quote)
-                
-                # Synthetic Cross Spread (Works perfectly for EUR/JPY, AUD/CAD, or EUR/USD)
-                score = (base_score - quote_score) / 2
+                base_val = get_currency_macro_score(base)
+                quote_val = get_currency_macro_score(quote)
+                score = (base_val - quote_val) / 2
                 
         elif "Indices" in asset_class:
-            # 1. Japanese Indices (Nikkei 225)
-            if "Nikkei" in name or "JP225" in name:
-                score = (dxy_weight * 0.8) - vix_weight + (us_macro_score * 0.5)
-            # 2. European Indices (DAX, FTSE, CAC)
-            elif name in ["FTSE 100", "DAX", "UK100", "GER40", "CAC 40"]:
-                score = (us_macro_score * 0.5) - (tnx_weight * 0.5) - vix_weight
-            # 3. Default US Indices (S&P 500, Nasdaq, Dow Jones)
+            if name == "Japan 225 (Nikkei)":
+                score = (jpy_weight * 1.5) + (us_macro_score * 0.8) - (vix_weight * 1.2)
+            elif name == "UK 100 (FTSE)":
+                score = (us_macro_score * 0.8) - gbp_weight - (vix_weight * 1.2)
+            elif name in ["Germany 40 (DAX)", "France 40 (CAC)", "Europe 50 (Euro Stoxx)"]:
+                score = (us_macro_score * 0.8) - eur_weight - (tnx_weight * 0.5) - vix_weight
+            elif name == "US Tech 100 (Nasdaq)":
+                score = (us_macro_score * 0.8) - (tnx_weight * 2.0) - vix_weight
+            elif name == "US 30 (Dow Jones)":
+                score = (us_macro_score * 1.2) - (tnx_weight * 0.5) - vix_weight
+            elif name == "US 2000 (Russell 2000)":
+                score = (us_macro_score * 1.5) - (tnx_weight * 1.5) - (vix_weight * 1.2)
             else:
                 score = us_macro_score - tnx_weight - vix_weight
+                
+            # --- RISK REGIME OVERRIDE FOR INDICES ---
+            if is_risk_off:
+                score -= 60  # Equities are dumped globally during panic
 
         elif "Metals" in asset_class or "Commodities" in asset_class:
             if name in ["Gold", "Silver", "Platinum"]:
-                # Precious metals are an alternative to the USD and US Yields
                 score = -us_macro_score - dxy_weight - tnx_weight
+                # --- RISK REGIME OVERRIDE ---
+                if is_risk_off: score += 60  # Precious metals act as a hard hedge
             else: 
-                # Energy/Industrial metals rely purely on global risk appetite
                 score = -vix_weight
+                # --- RISK REGIME OVERRIDE ---
+                if is_risk_off: score -= 50  # Industrial growth stops, oil/copper dumped
 
         elif "Crypto" in asset_class:
-            # Crypto is a high-beta risk asset. It hates a strong US Dollar (DXY), 
-            # high Treasury yields (expensive borrowing), and market fear (VIX).
             score = -us_macro_score - dxy_weight - tnx_weight - vix_weight
+            # --- RISK REGIME OVERRIDE FOR CRYPTO ---
+            if is_risk_off:
+                score -= 70  # The highest beta assets get dumped the hardest
 
         elif "Treasury" in asset_class:
-            # Bond PRICES move inverse to Bond YIELDS. 
             score = -tnx_weight * 2
+            # --- RISK REGIME OVERRIDE FOR BONDS ---
+            if is_risk_off:
+                score += 50  # Institutions buy bonds for guaranteed yield
 
         # Cap only the final output to ensure it fits the Master Score formula
         return max(-100, min(100, score))
