@@ -133,9 +133,20 @@ def calculate_technical_score(ticker_symbol):
         if macd_hist > 0: score += 10
         else: score -= 10
             
-        return max(-100, min(100, score))
+        if macd_hist > 0: score += 10
+        else: score -= 10
+            
+        details = {
+            "Close Price": round(close, 4),
+            "EMA 20": round(ema_20, 4),
+            "SMA 50": round(sma_50, 4),
+            "SMA 200": round(sma_200, 4),
+            "RSI (14)": round(rsi_14, 2),
+            "MACD Hist": round(macd_hist, 4)
+        }
+        return max(-100, min(100, score)), details
     except Exception:
-        return 0
+        return 0, {}
 
 # 4. THE SEASONALITY ENGINE
 @st.cache_data(ttl=86400)
@@ -144,19 +155,23 @@ def calculate_seasonality_score(ticker_symbol):
         import datetime
         asset = yf.Ticker(ticker_symbol)
         df = asset.history(period="10y", interval="1mo")
-        if df.empty: return 0
+        if df.empty: return 0, {}
         
         current_month = datetime.datetime.now().month
         df['Returns'] = df['Close'].pct_change()
         monthly_data = df[df.index.month == current_month]['Returns'].dropna()
         
-        if monthly_data.empty: return 0
+        if monthly_data.empty: return 0, {}
             
         avg_return = monthly_data.mean() * 100
         score = (avg_return / 2.0) * 100 # Scoring based on a 2% monthly move threshold
-        return max(-100, min(100, score))
+        
+        # --- NEW DETAILS DICTIONARY ---
+        details = {"Avg Monthly Return": round(avg_return, 2)}
+        return max(-100, min(100, score)), details
+        
     except Exception:
-        return 0
+        return 0, {}
 
 
         # 5. THE SENTIMENT ENGINE & COT MAPPING
@@ -276,16 +291,22 @@ def calculate_sentiment_score(ticker_symbol, name):
             except Exception:
                 pass
 
-        # --- PART D: THE MASTER SENTIMENT SCORE ---
+       # --- PART D: THE MASTER SENTIMENT SCORE ---
         if retail_score is not None:
             final_score = (retail_score + news_score + cot_score) / 3 
         else:
             final_score = (news_score + cot_score) / 2 
 
-        return max(-100, min(100, final_score))
+        # --- NEW DETAILS DICTIONARY ---
+        details = {
+            "Retail (DailyFX)": round(retail_score, 2) if retail_score is not None else 0.0,
+            "News (Vader AI)": round(news_score, 2),
+            "Smart Money (COT)": round(cot_score, 2)
+        }
+        return max(-100, min(100, final_score)), details
 
     except Exception:
-        return 0
+        return 0, {}
     
     # 6. THE FUNDAMENTALS ENGINE (MACRO PROXIES + US ANCHOR + GLOBAL EXCHANGES)
 
@@ -439,11 +460,25 @@ def calculate_fundamental_score(name, asset_class):
             if is_risk_off:
                 score += 50  # Institutions buy bonds for guaranteed yield
 
+        # --- NEW DETAILS DICTIONARY ---
+        details = {
+            "US Macro Score": round(us_macro_score, 2),
+            "VIX (Fear) Trend": round(vix_trend, 2),
+            "DXY (USD) Trend": round(dxy_trend, 2),
+            "TNX (Yield) Trend": round(tnx_trend, 2)
+        }
+        
+        # Inject Forex-specific base/quote scores if available
+        if "Forex" in asset_class and "/" in name:
+            if 'base_val' in locals() and 'quote_val' in locals():
+                details["Base Currency"] = round(base_val, 2)
+                details["Quote Currency"] = round(quote_val, 2)
+
         # Cap only the final output to ensure it fits the Master Score formula
-        return max(-100, min(100, score))
+        return max(-100, min(100, score)), details
 
     except Exception:
-        return 0
+        return 0, {}
 
 # 5. SIDEBAR NAVIGATION (Previously Section 4)
 with st.sidebar:
@@ -455,49 +490,63 @@ st.title(f"📊 Market Screener: {asset_class}")
 st.divider()
 
 # 7. LIVE DATA SCANNER (The Loop)
-scanned_data = []
-total_instruments = len(INSTRUMENTS[asset_class])
-my_bar = st.progress(0, text="Scanning live markets...")
-
-for i, (name, ticker) in enumerate(INSTRUMENTS[asset_class].items()):
+if "last_scanned_asset" not in st.session_state or st.session_state.last_scanned_asset != asset_class:
     
-    # --- 1. CALLING ALL 4 LIVE ENGINES ---
-    tech_score = calculate_technical_score(ticker)
-    seas_score = calculate_seasonality_score(ticker)
-    sent_score = calculate_sentiment_score(ticker, name)
-    fund_score = calculate_fundamental_score(name, asset_class)
-    
-    # --- 2. MASTER WEIGHTING MATH ---
-    # Technicals (30%), Fundamentals (30%), Sentiment (30%), Seasonality (10%)
-    master_score = (tech_score * 0.30) + (fund_score * 0.30) + (sent_score * 0.30) + (seas_score * 0.10)
-    
-    # --- 3. BIAS LABELING ---
-    if master_score >= 50: bias_label = "🔥 Very Bullish"
-    elif master_score >= 15: bias_label = "📈 Bullish"
-    elif master_score > -15: bias_label = "⚖️ Neutral"
-    elif master_score > -50: bias_label = "📉 Bearish"
-    else: bias_label = "❄️ Very Bearish"
+    scanned_data = []
+    breakdown_data = {}  
+    total_instruments = len(INSTRUMENTS[asset_class])
+    my_bar = st.progress(0, text="Scanning live markets...")
 
-    # --- 4. ADD TO TABLE ---
-    scanned_data.append({
-        "Instrument": name,
-        "Master Score": round(master_score, 1),
-        "Bias Status": bias_label,
-        "Technicals (30%)": int(tech_score),
-        "Fundamentals (30%)": int(fund_score),
-        "Sentiment (30%)": int(sent_score),
-        "Seasonality (10%)": int(seas_score)
-    })
+    for i, (name, ticker) in enumerate(INSTRUMENTS[asset_class].items()):
+        
+        # --- 1. CALLING ENGINES (Unpacking Tuples) ---
+        tech_score, tech_details = calculate_technical_score(ticker)
+        seas_score, seas_details = calculate_seasonality_score(ticker)
+        sent_score, sent_details = calculate_sentiment_score(ticker, name)
+        fund_score, fund_details = calculate_fundamental_score(name, asset_class)
+        
+        # --- 2. MASTER WEIGHTING MATH ---
+        # Technicals (30%), Fundamentals (30%), Sentiment (30%), Seasonality (10%)
+        master_score = (tech_score * 0.30) + (fund_score * 0.30) + (sent_score * 0.30) + (seas_score * 0.10)
+        
+        # --- 3. BIAS LABELING ---
+        if master_score >= 50: bias_label = "🔥 Very Bullish"
+        elif master_score >= 15: bias_label = "📈 Bullish"
+        elif master_score > -15: bias_label = "⚖️ Neutral"
+        elif master_score > -50: bias_label = "📉 Bearish"
+        else: bias_label = "❄️ Very Bearish"
+
+        # --- 4. ADD TO TABLE & SAVE BREAKDOWNS ---
+        scanned_data.append({
+            "Instrument": name,
+            "Master Score": round(master_score, 1),
+            "Bias Status": bias_label,
+            "Technicals (30%)": int(tech_score),
+            "Fundamentals (30%)": int(fund_score),
+            "Sentiment (30%)": int(sent_score),
+            "Seasonality (10%)": int(seas_score)
+        })
+        
+        # Save the dictionary to memory for the UI expanders
+        breakdown_data[name] = {
+            "Technicals": tech_details,
+            "Fundamentals": fund_details,
+            "Sentiment": sent_details,
+            "Seasonality": seas_details
+        }
+        
+        my_bar.progress((i + 1) / total_instruments)
+
+    my_bar.empty()
     
-    # Update progress bar
-    my_bar.progress((i + 1) / total_instruments)
+    # Save to session state so it survives clicks
+    st.session_state.scanned_data = scanned_data
+    st.session_state.breakdown_data = breakdown_data
+    st.session_state.last_scanned_asset = asset_class
 
-# Clear the progress bar when done
-my_bar.empty()
-
-# Create the final dataframe and sort by the highest master score
-# Create the final dataframe and sort by the highest master score
-df = pd.DataFrame(scanned_data).sort_values(by="Master Score", ascending=False).reset_index(drop=True)
+# Retrieve from session state for display
+df = pd.DataFrame(st.session_state.scanned_data).sort_values(by="Master Score", ascending=False).reset_index(drop=True)
+breakdown_data = st.session_state.breakdown_data
 
 # --- 5. THE COLOR FORMATTING ENGINE ---
 def color_scores(val):
@@ -528,5 +577,52 @@ styled_df = (
 )
 # Note: If you get a warning about 'applymap' being deprecated, just change it to '.map(color_scores...'
 
-# Display the beautiful, color-coded dashboard
-st.dataframe(styled_df, width="stretch")
+# Display the interactive dataframe with row-selection enabled
+event = st.dataframe(
+    styled_df, 
+    width="stretch",
+    on_select="rerun",
+    selection_mode="single-row"
+)
+
+# --- 6. THE DRILL-DOWN BREAKDOWN UI ---
+selected_rows = event.selection.rows
+
+if selected_rows:
+    # Get the index and name of the clicked instrument
+    selected_idx = selected_rows[0]
+    selected_instrument = df.iloc[selected_idx]["Instrument"]
+    
+    # Retrieve the saved breakdown dictionary from memory
+    details = breakdown_data[selected_instrument]
+    
+    st.divider()
+    st.subheader(f"🔍 Deep Dive: {selected_instrument}")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        with st.expander("📈 Technical Analysis", expanded=True):
+            t_cols = st.columns(3)
+            idx = 0
+            for key, val in details["Technicals"].items():
+                t_cols[idx % 3].metric(label=key, value=val)
+                idx += 1
+                
+        with st.expander("🌍 Fundamental Macro"):
+            f_cols = st.columns(2)
+            idx = 0
+            for key, val in details["Fundamentals"].items():
+                f_cols[idx % 2].metric(label=key, value=val)
+                idx += 1
+                
+    with col2:
+        with st.expander("🧠 Sentiment & COT", expanded=True):
+            s_cols = st.columns(3)
+            idx = 0
+            for key, val in details["Sentiment"].items():
+                s_cols[idx % 3].metric(label=key, value=val)
+                idx += 1
+                
+        with st.expander("📅 Seasonality"):
+            st.metric(label="Average Monthly Return", value=f"{details['Seasonality'].get('Avg Monthly Return', 0)}%")
