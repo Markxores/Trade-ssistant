@@ -26,7 +26,7 @@ INSTRUMENTS = {
         "GBP/CAD": "GBPCAD=X", "GBP/NZD": "GBPNZD=X", "NZD/CAD": "NZDCAD=X", "NZD/CHF": "NZDCHF=X"
     },
     "Global Stock Indices": {
-        "US Dollar Index (DXY)": "DX=F",
+        "US Dollar Index (DXY)": "DX-Y.NYB",
         "US 30 (Dow Jones)": "^DJI",
         "US 500 (S&P 500)": "^GSPC",
         "US Tech 100 (Nasdaq)": "^NDX",
@@ -364,7 +364,7 @@ def get_global_macro_data():
 def get_macro_proxy_data():
     try:
         import pandas as pd
-        macro_tickers = ["^TNX", "DX=F", "^VIX", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GC=F", "CL=F"]
+        macro_tickers = ["^TNX", "DX-Y.NYB", "^VIX", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GC=F", "CL=F"]
         
         # Download the data
         df = yf.download(macro_tickers, period="2mo", progress=False)['Close']
@@ -397,7 +397,7 @@ def calculate_fundamental_score(name, asset_class):
         is_risk_off = current['^VIX'] >= 30  
         
         tnx_trend = max(-30, min(30, ((current['^TNX'] - past['^TNX']) / past['^TNX']) * 100))
-        dxy_trend = max(-20, min(20, ((current['DX=F'] - past['DX=F']) / past['DX=F']) * 100))
+        dxy_trend = max(-20, min(20, ((current['DX-Y.NYB'] - past['DX-Y.NYB']) / past['DX-Y.NYB']) * 100))
         vix_trend = max(-50, min(50, ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100))
         eur_trend = max(-20, min(20, ((current['EURUSD=X'] - past['EURUSD=X']) / past['EURUSD=X']) * 100))
         gbp_trend = max(-20, min(20, ((current['GBPUSD=X'] - past['GBPUSD=X']) / past['GBPUSD=X']) * 100))
