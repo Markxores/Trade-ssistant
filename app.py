@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 import random
 import yfinance as yf
-
 import requests
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import pandas_datareader.data as web
 import datetime
+import pysentiment2 as ps
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="Quant Trade Engine", layout="wide")
@@ -250,26 +250,51 @@ def calculate_sentiment_score(ticker_symbol, name):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         
-        # --- PART A: NEWS SENTIMENT (Google News + VADER AI) ---
+        # --- PART A: LOUGHRAN-MCDONALD FINANCIAL NEWS SENTIMENT ---
         news_score = None
         try:
-            analyzer = SentimentIntensityAnalyzer()
-            search_query = f"{name} market news".replace(" ", "+")
+            # Clean search query: remove parentheses/special characters to prevent query pollution
+            clean_name = name.split("(")[0].strip()
+            search_query = f"{clean_name} market news".replace(" ", "+")
             rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
             
             rss_resp = requests.get(rss_url, headers=headers, timeout=5)
             soup = BeautifulSoup(rss_resp.content, features="xml")
             headlines = soup.find_all("title")
             
-            sentiment_sum = 0
+            # Initialize the official Loughran-McDonald analyzer
+            lm = ps.LM()
+            
+            total_polarity = 0
             count = 0
+            seen_headlines = set() # Deduplication filter for syndication spam
+            
             for headline in headlines[1:16]:
-                score = analyzer.polarity_scores(headline.text)['compound']
-                sentiment_sum += score
+                text = headline.text
+                text_lower = text.lower()
+                
+                # Deduplication check: skip if we've seen a near-identical title
+                if text_lower in seen_headlines:
+                    continue
+                seen_headlines.add(text_lower)
+                
+                # Tokenize and score using the LM dictionary framework
+                tokens = lm.tokenize(text)
+                score_dict = lm.get_score(tokens)
+                
+                # score_dict returns counts and metrics like 'Positive', 'Negative', 'Polarity'
+                # We extract the 'Polarity' score calculated by the LM model for the headline
+                polarity = score_dict.get('Polarity', 0)
+                
+                total_polarity += polarity
                 count += 1
+                
             if count > 0:
-                news_score = (sentiment_sum / count) * 100 
-        except Exception:
+                avg_polarity = total_polarity / count
+                # Scale the LM polarity output to match your -100 to +100 distribution range
+                news_score = max(-100, min(100, avg_polarity * 500.0))
+                
+        except Exception as e:
             pass
 
         # --- PART B: INSTITUTIONAL SMART MONEY (COT & PCR) ---
@@ -314,9 +339,8 @@ def calculate_sentiment_score(ticker_symbol, name):
         else:
             final_score = 0 
 
-        # --- DETAILS DICTIONARY ---
         details = {
-            "News (Vader AI)": round(news_score, 2) if news_score is not None else "No Data",
+            "News (Loughran-McDonald)": round(news_score, 2) if news_score is not None else "No Data",
             smart_money_label: round(smart_money_score, 2) if smart_money_score is not None else "No Data"
         }
         return max(-100, min(100, final_score)), details
