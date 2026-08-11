@@ -363,8 +363,16 @@ def get_global_macro_data():
 @st.cache_data(ttl=3600)
 def get_macro_proxy_data():
     try:
+        import pandas as pd
         macro_tickers = ["^TNX", "DX=F", "^VIX", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GC=F", "CL=F"]
-        return yf.download(macro_tickers, period="2mo", progress=False)['Close']
+        
+        # Download the data
+        df = yf.download(macro_tickers, period="2mo", progress=False)['Close']
+        
+        # FIX: Forward-fill any missing data points (NaNs) to prevent math errors, then drop empty rows
+        df = df.ffill().dropna()
+        
+        return df
     except Exception:
         import pandas as pd
         return pd.DataFrame()
