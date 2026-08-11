@@ -359,7 +359,7 @@ def get_global_macro_data():
     except Exception:
         return {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}
 
-    # HELPER: Fetches Live Market Proxy Data (Cached once per hour)
+   # HELPER: Fetches Live Market Proxy Data (Cached once per hour)
 @st.cache_data(ttl=3600)
 def get_macro_proxy_data():
     try:
@@ -369,8 +369,9 @@ def get_macro_proxy_data():
         # Download the data
         df = yf.download(macro_tickers, period="2mo", progress=False)['Close']
         
-        # FIX: Forward-fill any missing data points (NaNs) to prevent math errors, then drop empty rows
-        df = df.ffill().dropna()
+        # FIX: Forward-fill first, then backward-fill for any leading NaNs. 
+        # No dropna() so we preserve the row count.
+        df = df.ffill().bfill()
         
         return df
     except Exception:
