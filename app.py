@@ -73,7 +73,19 @@ INSTRUMENTS = {
     }
 }
 
-# 3. THE TECHNICAL ANALYSIS ENGINE
+# THE GLOBAL MACRO FRED DICTIONARY
+FRED_MACRO_TICKERS = {
+    "USD": {"Rate": "FEDFUNDS", "CPI": "CPIAUCSL"},
+    "EUR": {"Rate": "IR3TIB01EZM156N", "CPI": "CP0000EZ19M086NEST"},
+    "GBP": {"Rate": "IR3TIB01GBM156N", "CPI": "GBRCPIALLMINMEI"},
+    "JPY": {"Rate": "IR3TIB01JPM156N", "CPI": "JPNCPIALLMINMEI"},
+    "CAD": {"Rate": "IR3TIB01CAM156N", "CPI": "CANCPIALLMINMEI"},
+    "AUD": {"Rate": "IR3TIB01AUM156N", "CPI": "CPALTT01AUQ657N"}, 
+    "NZD": {"Rate": "IR3TIB01NZM156N", "CPI": "CPALTT01NZQ657N"},
+    "CHF": {"Rate": "IR3TIB01CHM156N", "CPI": "CHECPIALLMINMEI"}
+}
+
+
 # 3. THE TECHNICAL ANALYSIS ENGINE
 @st.cache_data(ttl=3600)
 def calculate_technical_score(ticker_symbol):
@@ -81,7 +93,7 @@ def calculate_technical_score(ticker_symbol):
         asset = yf.Ticker(ticker_symbol)
         df = asset.history(period="1y")
         if df.empty or len(df) < 200:
-            return 0  
+            return 0, {"⚠️ STATUS": "Insufficient History"} 
             
         # --- NATIVE PANDAS TECHNICAL INDICATORS ---
         # 1. Moving Averages
@@ -127,14 +139,9 @@ def calculate_technical_score(ticker_symbol):
         elif rsi_14 > 50: score += 15 
         else: score -= 15 
             
-        if macd_line > macd_signal: score += 15
-        else: score -= 15
-        
-        if macd_hist > 0: score += 10
-        else: score -= 10
-            
-        if macd_hist > 0: score += 10
-        else: score -= 10
+        # MACD (25 Points) - Consolidating the duplicate checks
+        if macd_hist > 0: score += 25
+        else: score -= 25
             
         details = {
             "Close Price": round(close, 4),
@@ -146,7 +153,7 @@ def calculate_technical_score(ticker_symbol):
         }
         return max(-100, min(100, score)), details
     except Exception:
-        return 0, {}
+        return 0, {"⚠️ STATUS": "Technical API Failure"}
 
 # 4. THE SEASONALITY ENGINE
 @st.cache_data(ttl=86400)
@@ -155,13 +162,13 @@ def calculate_seasonality_score(ticker_symbol):
         import datetime
         asset = yf.Ticker(ticker_symbol)
         df = asset.history(period="10y", interval="1mo")
-        if df.empty: return 0, {}
+        if df.empty: return 0, {"⚠️ STATUS": "No Seasonality Data"}
         
         current_month = datetime.datetime.now().month
         df['Returns'] = df['Close'].pct_change()
         monthly_data = df[df.index.month == current_month]['Returns'].dropna()
         
-        if monthly_data.empty: return 0, {}
+        if monthly_data.empty: return 0, {"⚠️ STATUS": "No Monthly Data"}
             
         avg_return = monthly_data.mean() * 100
         score = (avg_return / 2.0) * 100 # Scoring based on a 2% monthly move threshold
@@ -171,7 +178,7 @@ def calculate_seasonality_score(ticker_symbol):
         return max(-100, min(100, score)), details
         
     except Exception:
-        return 0, {}
+        return 0, {"⚠️ STATUS": "Seasonality API Failure"}
 
 
         # 5. THE SENTIMENT ENGINE & COT MAPPING
@@ -184,6 +191,13 @@ COT_MAPPING = {
 CURRENCY_COT_MAPPING = {
     "EUR": "099741", "GBP": "096742", "JPY": "097741",
     "CHF": "092741", "CAD": "090741", "AUD": "232741", "NZD": "112741"
+}
+
+INDEX_ETF_MAPPING = {
+    "US 500 (S&P 500)": "SPY",
+    "US Tech 100 (Nasdaq)": "QQQ",
+    "US 30 (Dow Jones)": "DIA",
+    "US 2000 (Russell 2000)": "IWM"
 }
 
 # HELPER FUNCTION: Fetches the raw CFTC score for a single asset/currency
@@ -209,28 +223,35 @@ def get_cftc_score(cftc_code):
     except Exception:
         pass
     return None
+# HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
+def get_put_call_ratio(etf_ticker):
+    try:
+        asset = yf.Ticker(etf_ticker)
+        expirations = asset.options
+        if not expirations: return None
+            
+        chain = asset.option_chain(expirations[0])
+        put_vol = chain.puts['volume'].sum()
+        call_vol = chain.calls['volume'].sum()
+        
+        if call_vol == 0: return None
+            
+        pcr = put_vol / call_vol
+        
+        # Contrarian Scoring: High PCR (Fear) = Bullish, Low PCR (Greed) = Bearish
+        if pcr > 1.0: return 50
+        elif pcr < 0.7: return -50
+        else: return 0
+    except Exception:
+        return None
 
 @st.cache_data(ttl=3600)
 def calculate_sentiment_score(ticker_symbol, name):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         
-        # --- PART A: RETAIL SENTIMENT (DailyFX Mimic) ---
-        retail_score = None
-        try:
-            url = "https://content.dailyfx.com/api/v1/sentiment"
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                clean_name = name.replace("/", "").upper()
-                if clean_name in data['sentiment']:
-                    long_pct = data['sentiment'][clean_name]['long_percentage']
-                    retail_score = (50 - long_pct) * 2 # Contrarian flip
-        except Exception:
-            pass
-
-        # --- PART B: NEWS SENTIMENT (Google News + VADER AI) ---
-        news_score = 0
+        # --- PART A: NEWS SENTIMENT (Google News + VADER AI) ---
+        news_score = None
         try:
             analyzer = SentimentIntensityAnalyzer()
             search_query = f"{name} market news".replace(" ", "+")
@@ -251,9 +272,9 @@ def calculate_sentiment_score(ticker_symbol, name):
         except Exception:
             pass
 
-        # --- PART C: SYNTHETIC COT SMART MONEY ---
-        cot_score = 0
-        cot_data_found = False
+        # --- PART B: INSTITUTIONAL SMART MONEY (COT & PCR) ---
+        smart_money_score = None
+        smart_money_label = "Smart Money (COT)"
         
         if "/" in name:
             base, quote = name.split("/")
@@ -264,94 +285,108 @@ def calculate_sentiment_score(ticker_symbol, name):
             quote_score = get_cftc_score(quote_code) if quote_code else None
             
             if quote == "USD" and base_score is not None:
-                cot_score = base_score
-                cot_data_found = True
+                smart_money_score = base_score
             elif base == "USD" and quote_score is not None:
-                cot_score = -quote_score 
-                cot_data_found = True
+                smart_money_score = -quote_score 
             elif base_score is not None and quote_score is not None:
                 raw_cross_score = base_score - quote_score
-                cot_score = raw_cross_score / 2 
-                cot_data_found = True
+                smart_money_score = raw_cross_score / 2 
                 
         elif name in COT_MAPPING:
             cftc_info = COT_MAPPING[name]
             raw_score = get_cftc_score(cftc_info["code"])
             if raw_score is not None:
-                cot_score = -raw_score if cftc_info["invert"] else raw_score
-                cot_data_found = True
+                smart_money_score = -raw_score if cftc_info["invert"] else raw_score
+                
+        elif name in INDEX_ETF_MAPPING:
+            pcr_score = get_put_call_ratio(INDEX_ETF_MAPPING[name])
+            if pcr_score is not None:
+                smart_money_score = pcr_score
+                smart_money_label = "Smart Money (Put/Call)"
 
-        if not cot_data_found:
-            try:
-                asset = yf.Ticker(ticker_symbol)
-                df = asset.history(period="1mo")
-                price_change_5d = ((df.iloc[-1]['Close'] - df.iloc[-5]['Close']) / df.iloc[-5]['Close']) * 100
-                proxy = 100 if price_change_5d > 2 else (-100 if price_change_5d < -2 else price_change_5d * 50)
-                cot_score = max(-100, min(100, proxy))
-            except Exception:
-                pass
-
-       # --- PART D: THE MASTER SENTIMENT SCORE ---
-        if retail_score is not None:
-            final_score = (retail_score + news_score + cot_score) / 3 
+        # --- PART C: THE MASTER SENTIMENT SCORE ---
+        available_scores = []
+        if news_score is not None: available_scores.append(news_score)
+        if smart_money_score is not None: available_scores.append(smart_money_score)
+        
+        if len(available_scores) > 0:
+            final_score = sum(available_scores) / len(available_scores)
         else:
-            final_score = (news_score + cot_score) / 2 
+            final_score = 0 
 
-        # --- NEW DETAILS DICTIONARY ---
+        # --- DETAILS DICTIONARY ---
         details = {
-            "Retail (DailyFX)": round(retail_score, 2) if retail_score is not None else 0.0,
-            "News (Vader AI)": round(news_score, 2),
-            "Smart Money (COT)": round(cot_score, 2)
+            "News (Vader AI)": round(news_score, 2) if news_score is not None else "No Data",
+            smart_money_label: round(smart_money_score, 2) if smart_money_score is not None else "No Data"
         }
         return max(-100, min(100, final_score)), details
 
     except Exception:
-        return 0, {}
+        return 0, {"⚠️ STATUS": "Sentiment API Failure"}
     
     # 6. THE FUNDAMENTALS ENGINE (MACRO PROXIES + US ANCHOR + GLOBAL EXCHANGES)
 
-# HELPER: Fetches real US Economic Data from the Federal Reserve (FRED)
-@st.cache_data(ttl=86400) # Cache for 24 hours (Macro data updates slowly)
-def get_us_economic_baseline():
+# HELPER: Fetches Real Global Economic Data from the Federal Reserve (FRED)
+@st.cache_data(ttl=86400) # Cache for 24 hours
+def get_global_macro_data():
     try:
         end = datetime.datetime.now()
-        start = end - datetime.timedelta(days=365) # 1 year lookback
+        start = end - datetime.timedelta(days=365) 
         
-        # Pull Fed Funds Rate, CPI (Inflation), and GDP
-        df = web.DataReader(['FEDFUNDS', 'CPIAUCSL', 'GDP'], 'fred', start, end)
+        # Flatten dictionary to pull all 16 data streams at once (massive speed boost)
+        all_tickers = []
+        for data in FRED_MACRO_TICKERS.values():
+            all_tickers.extend([data["Rate"], data["CPI"]])
+            
+        df = web.DataReader(all_tickers, 'fred', start, end)
+        scores = {}
         
-        # Calculate recent changes
-        rate_change = df['FEDFUNDS'].dropna().iloc[-1] - df['FEDFUNDS'].dropna().iloc[-2]
-        cpi_change = ((df['CPIAUCSL'].dropna().iloc[-1] - df['CPIAUCSL'].dropna().iloc[-2]) / df['CPIAUCSL'].dropna().iloc[-2]) * 100
-        gdp_change = ((df['GDP'].dropna().iloc[-1] - df['GDP'].dropna().iloc[-2]) / df['GDP'].dropna().iloc[-2]) * 100
-        
-        # Build the US True Health Score (Uncapped so it can drive massive momentum)
-        health_score = (gdp_change * 15) + (rate_change * 10) - (cpi_change * 10)
-        return health_score
+        for currency, data in FRED_MACRO_TICKERS.items():
+            rate_col, cpi_col = data["Rate"], data["CPI"]
+            
+            # Rate Momentum
+            rate_series = df[rate_col].dropna()
+            rate_change = rate_series.iloc[-1] - rate_series.iloc[-2] if len(rate_series) >= 2 else 0
+            
+            # CPI (Inflation) Momentum
+            cpi_series = df[cpi_col].dropna()
+            cpi_change = ((cpi_series.iloc[-1] - cpi_series.iloc[-2]) / cpi_series.iloc[-2]) * 100 if len(cpi_series) >= 2 else 0
+                
+            # True Macro Logic: Rising Rates = Currency Strength (+15), Rising Inflation = Currency Devaluation (-10)
+            scores[currency] = (rate_change * 15) - (cpi_change * 10)
+            
+        return scores
     except Exception:
-        return 0 
+        return {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}
+
+    # HELPER: Fetches Live Market Proxy Data (Cached once per hour)
+@st.cache_data(ttl=3600)
+def get_macro_proxy_data():
+    try:
+        macro_tickers = ["^TNX", "DX=F", "^VIX", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GC=F", "CL=F"]
+        return yf.download(macro_tickers, period="2mo", progress=False)['Close']
+    except Exception:
+        import pandas as pd
+        return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def calculate_fundamental_score(name, asset_class):
     try:
-        # 1. Pull Real US Economic Data Score (The Anchor)
-        us_macro_score = get_us_economic_baseline()
+        # --- 1. TRUE MACRO (Global FRED Economic Baseline) ---
+        global_macro_scores = get_global_macro_data()
+        us_true_macro = max(-100, min(100, global_macro_scores.get("USD", 0)))
 
-        # 2. Pull Live Market Proxy Data (Yields, DXY, VIX, EUR, GBP, JPY, Gold, Oil)
-        macro_tickers = ["^TNX", "DX=F", "^VIX", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GC=F", "CL=F"]
-        macro_data = yf.download(macro_tickers, period="2mo", progress=False)['Close']
+        # --- 2. PROXY MOMENTUM (Live Market Data) ---
+        macro_data = get_macro_proxy_data()
         
         if macro_data.empty or len(macro_data) < 20: 
-            return 0
+            return 0, {"⚠️ STATUS": "Proxy Data Failed"}
             
         current = macro_data.iloc[-1]
         past = macro_data.iloc[-20]
         
-        # --- THE MASTER RISK SWITCH TRIGGER ---
-        current_vix = current['^VIX']
-        is_risk_off = current_vix >= 30  # Threshold for Institutional Panic
+        is_risk_off = current['^VIX'] >= 30  
         
-        # Calculate 20-day percentage trends
         tnx_trend = max(-30, min(30, ((current['^TNX'] - past['^TNX']) / past['^TNX']) * 100))
         dxy_trend = max(-20, min(20, ((current['DX=F'] - past['DX=F']) / past['DX=F']) * 100))
         vix_trend = max(-50, min(50, ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100))
@@ -361,124 +396,123 @@ def calculate_fundamental_score(name, asset_class):
         gold_trend = max(-20, min(20, ((current['GC=F'] - past['GC=F']) / past['GC=F']) * 100))
         oil_trend = max(-30, min(30, ((current['CL=F'] - past['CL=F']) / past['CL=F']) * 100))
         
-        # Apply Base Multipliers
         tnx_weight = tnx_trend * 1.5
         dxy_weight = dxy_trend * 3
         vix_weight = vix_trend * 1.5
         eur_weight = eur_trend * 2.0
         gbp_weight = gbp_trend * 2.0
-        jpy_weight = jpy_trend * 2.0  # Positive means USD is strong / JPY is weak
+        jpy_weight = jpy_trend * 2.0 
         gold_weight = gold_trend * 2.0
         oil_weight = oil_trend * 2.0
         
-        score = 0
+        proxy_score = 0
+        true_macro_score = 0
         
-        # --- DYNAMIC SCORING LOGIC ---
-        
+        # --- DYNAMIC SCORING LOGIC (Decoupled 50/50 Blend) ---
         if "Forex" in asset_class:
-            def get_currency_macro_score(currency):
-                base_score = 0
+            def get_currency_scores(currency):
+                c_proxy = 0
                 
-                # 1. THE COMMODITY ANCHORS (AUD, NZD, CAD) - 50% Primary Driver
+                # Fetch actual domestic economic data directly from FRED mapping
+                c_true_macro = max(-100, min(100, global_macro_scores.get(currency, 0)))
+                
                 if currency == "CAD":
-                    base_score = (oil_weight * 1.25) + (us_macro_score * 1.0) - dxy_weight - vix_weight
+                    c_proxy = (oil_weight * 1.25) - dxy_weight - vix_weight
                 elif currency in ["AUD", "NZD"]:
-                    base_score = (gold_weight * 1.25) + (us_macro_score * 0.8) - dxy_weight - vix_weight
-                    
-                # 2. THE MOMENTUM MAJORS (EUR, GBP, JPY)
+                    c_proxy = (gold_weight * 1.25) - dxy_weight - vix_weight
                 elif currency == "EUR":
-                    base_score = (eur_weight * 1.5) - dxy_weight - tnx_weight
+                    c_proxy = (eur_weight * 1.5) - dxy_weight - tnx_weight
                 elif currency == "GBP":
-                    base_score = (gbp_weight * 1.5) - dxy_weight - tnx_weight
+                    c_proxy = (gbp_weight * 1.5) - dxy_weight - tnx_weight
                 elif currency == "JPY":
-                    base_score = -(jpy_weight * 1.5) - tnx_weight - (us_macro_score * 1.0)
-                    
-                # 3. THE SAFE HAVEN (CHF)
+                    c_proxy = -(jpy_weight * 1.5) - tnx_weight
                 elif currency == "CHF":
-                    base_score = vix_weight - tnx_weight - us_macro_score
-                    
-                # 4. THE BASELINE (USD)
+                    c_proxy = vix_weight - tnx_weight
                 elif currency == "USD":
-                    base_score = dxy_weight + tnx_weight + us_macro_score
-                
-                # --- RISK REGIME OVERRIDE FOR FOREX ---
+                    c_proxy = dxy_weight + tnx_weight
+                    
                 if is_risk_off:
-                    if currency in ["JPY", "CHF", "USD"]: 
-                        base_score += 50  # Capital flies into safe havens
-                    elif currency in ["AUD", "NZD", "CAD"]: 
-                        base_score -= 50  # Capital abandons commodity/risk currencies
-                    elif currency in ["EUR", "GBP"]: 
-                        base_score -= 20  # Core majors suffer moderate sell-offs
-                        
-                return base_score
+                    if currency in ["JPY", "CHF", "USD"]: c_proxy += 50 
+                    elif currency in ["AUD", "NZD", "CAD"]: c_proxy -= 50 
+                    elif currency in ["EUR", "GBP"]: c_proxy -= 20 
+                    
+                return c_proxy, c_true_macro
                 
             if "/" in name:
                 base, quote = name.split("/")
-                base_val = get_currency_macro_score(base)
-                quote_val = get_currency_macro_score(quote)
-                score = (base_val - quote_val) / 2
+                base_proxy, base_macro = get_currency_scores(base)
+                quote_proxy, quote_macro = get_currency_scores(quote)
+                
+                proxy_score = (base_proxy - quote_proxy) / 2
+                true_macro_score = (base_macro - quote_macro) / 2
                 
         elif "Indices" in asset_class:
             if name == "Japan 225 (Nikkei)":
-                score = (jpy_weight * 1.5) + (us_macro_score * 0.8) - (vix_weight * 1.2)
+                proxy_score = (jpy_weight * 1.5) - (vix_weight * 1.2)
+                true_macro_score = us_true_macro * 0.8
             elif name == "UK 100 (FTSE)":
-                score = (us_macro_score * 0.8) - gbp_weight - (vix_weight * 1.2)
+                proxy_score = -gbp_weight - (vix_weight * 1.2)
+                true_macro_score = us_true_macro * 0.8
             elif name in ["Germany 40 (DAX)", "France 40 (CAC)", "Europe 50 (Euro Stoxx)"]:
-                score = (us_macro_score * 0.8) - eur_weight - (tnx_weight * 0.5) - vix_weight
+                proxy_score = -eur_weight - (tnx_weight * 0.5) - vix_weight
+                true_macro_score = us_true_macro * 0.8
             elif name == "US Tech 100 (Nasdaq)":
-                score = (us_macro_score * 0.8) - (tnx_weight * 2.0) - vix_weight
+                proxy_score = -(tnx_weight * 2.0) - vix_weight
+                true_macro_score = us_true_macro * 0.8
             elif name == "US 30 (Dow Jones)":
-                score = (us_macro_score * 1.2) - (tnx_weight * 0.5) - vix_weight
+                proxy_score = -(tnx_weight * 0.5) - vix_weight
+                true_macro_score = us_true_macro * 1.2
             elif name == "US 2000 (Russell 2000)":
-                score = (us_macro_score * 1.5) - (tnx_weight * 1.5) - (vix_weight * 1.2)
+                proxy_score = -(tnx_weight * 1.5) - (vix_weight * 1.2)
+                true_macro_score = us_true_macro * 1.5
             else:
-                score = us_macro_score - tnx_weight - vix_weight
+                proxy_score = -tnx_weight - vix_weight
+                true_macro_score = us_true_macro
                 
-            # --- RISK REGIME OVERRIDE FOR INDICES ---
-            if is_risk_off:
-                score -= 60  # Equities are dumped globally during panic
+            if is_risk_off: proxy_score -= 60 
 
         elif "Metals" in asset_class or "Commodities" in asset_class:
             if name in ["Gold", "Silver", "Platinum"]:
-                score = -us_macro_score - dxy_weight - tnx_weight
-                # --- RISK REGIME OVERRIDE ---
-                if is_risk_off: score += 60  # Precious metals act as a hard hedge
+                proxy_score = -dxy_weight - tnx_weight
+                true_macro_score = -us_true_macro
+                if is_risk_off: proxy_score += 60 
             else: 
-                score = -vix_weight
-                # --- RISK REGIME OVERRIDE ---
-                if is_risk_off: score -= 50  # Industrial growth stops, oil/copper dumped
+                proxy_score = -vix_weight
+                true_macro_score = us_true_macro * 0.5 
+                if is_risk_off: proxy_score -= 50 
 
         elif "Crypto" in asset_class:
-            score = -us_macro_score - dxy_weight - tnx_weight - vix_weight
-            # --- RISK REGIME OVERRIDE FOR CRYPTO ---
-            if is_risk_off:
-                score -= 70  # The highest beta assets get dumped the hardest
+            proxy_score = -dxy_weight - tnx_weight - vix_weight
+            true_macro_score = -us_true_macro
+            if is_risk_off: proxy_score -= 70 
 
         elif "Treasury" in asset_class:
-            score = -tnx_weight * 2
-            # --- RISK REGIME OVERRIDE FOR BONDS ---
-            if is_risk_off:
-                score += 50  # Institutions buy bonds for guaranteed yield
+            proxy_score = -tnx_weight * 2
+            true_macro_score = -us_true_macro * 0.5 
+            if is_risk_off: proxy_score += 50 
+
+        # --- THE 50/50 BLEND ---
+        capped_proxy = max(-100, min(100, proxy_score))
+        capped_macro = max(-100, min(100, true_macro_score))
+        final_score = (capped_proxy * 0.5) + (capped_macro * 0.5)
 
         # --- NEW DETAILS DICTIONARY ---
         details = {
-            "US Macro Score": round(us_macro_score, 2),
+            "True Macro (FRED) [50%]": round(capped_macro, 2),
+            "Proxy Momentum [50%]": round(capped_proxy, 2),
             "VIX (Fear) Trend": round(vix_trend, 2),
-            "DXY (USD) Trend": round(dxy_trend, 2),
-            "TNX (Yield) Trend": round(tnx_trend, 2)
+            "DXY (USD) Trend": round(dxy_trend, 2)
         }
         
-        # Inject Forex-specific base/quote scores if available
         if "Forex" in asset_class and "/" in name:
-            if 'base_val' in locals() and 'quote_val' in locals():
-                details["Base Currency"] = round(base_val, 2)
-                details["Quote Currency"] = round(quote_val, 2)
+            if 'base_proxy' in locals() and 'base_macro' in locals():
+                details["Base Currency Blend"] = round((base_proxy * 0.5) + (base_macro * 0.5), 2)
+                details["Quote Currency Blend"] = round((quote_proxy * 0.5) + (quote_macro * 0.5), 2)
 
-        # Cap only the final output to ensure it fits the Master Score formula
-        return max(-100, min(100, score)), details
+        return max(-100, min(100, final_score)), details
 
     except Exception:
-        return 0, {}
+        return 0, {"⚠️ STATUS": "Macro API Failure"}
 
 # 5. SIDEBAR NAVIGATION (Previously Section 4)
 with st.sidebar:
