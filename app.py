@@ -456,24 +456,45 @@ def calculate_fundamental_score(name, asset_class):
                 true_macro_score = (base_macro - quote_macro) / 2
                 
         elif "Indices" in asset_class:
+            # 1. Fetch the True Macro data for regional economies
+            jpy_macro = max(-100, min(100, global_macro_scores.get("JPY", 0)))
+            gbp_macro = max(-100, min(100, global_macro_scores.get("GBP", 0)))
+            eur_macro = max(-100, min(100, global_macro_scores.get("EUR", 0)))
+            aud_macro = max(-100, min(100, global_macro_scores.get("AUD", 0)))
+
             if name == "Japan 225 (Nikkei)":
                 proxy_score = (jpy_weight * 1.5) - (vix_weight * 1.2)
-                true_macro_score = us_true_macro * 0.8
+                # Blend: 60% Japanese Domestic Economy, 40% US Global Anchor
+                true_macro_score = (jpy_macro * 0.6) + (us_true_macro * 0.4)
+                
             elif name == "UK 100 (FTSE)":
                 proxy_score = -gbp_weight - (vix_weight * 1.2)
-                true_macro_score = us_true_macro * 0.8
+                # Blend: 40% UK Domestic Economy (heavy global exporter), 60% US Global Anchor
+                true_macro_score = (gbp_macro * 0.4) + (us_true_macro * 0.6)
+                
             elif name in ["Germany 40 (DAX)", "France 40 (CAC)", "Europe 50 (Euro Stoxx)"]:
                 proxy_score = -eur_weight - (tnx_weight * 0.5) - vix_weight
-                true_macro_score = us_true_macro * 0.8
+                # Blend: 50% Eurozone Domestic Economy, 50% US Global Anchor
+                true_macro_score = (eur_macro * 0.5) + (us_true_macro * 0.5)
+                
+            elif name == "Australia 200 (ASX)":
+                # Proxy: Commodity-heavy, so it gets a slight gold correlation
+                proxy_score = (gold_weight * 0.5) - (tnx_weight * 0.5) - vix_weight
+                # Blend: 70% Australian Domestic Economy, 30% US Global Anchor
+                true_macro_score = (aud_macro * 0.7) + (us_true_macro * 0.3)
+                
             elif name == "US Tech 100 (Nasdaq)":
                 proxy_score = -(tnx_weight * 2.0) - vix_weight
                 true_macro_score = us_true_macro * 0.8
+                
             elif name == "US 30 (Dow Jones)":
                 proxy_score = -(tnx_weight * 0.5) - vix_weight
                 true_macro_score = us_true_macro * 1.2
+                
             elif name == "US 2000 (Russell 2000)":
                 proxy_score = -(tnx_weight * 1.5) - (vix_weight * 1.2)
                 true_macro_score = us_true_macro * 1.5
+                
             else:
                 proxy_score = -tnx_weight - vix_weight
                 true_macro_score = us_true_macro
