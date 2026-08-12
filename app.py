@@ -415,18 +415,32 @@ def get_cftc_score(cftc_code):
         if resp.status_code == 200:
             data = resp.json()
             if len(data) == 2:
-                longs = float(data[0].get('noncomm_positions_long_all', 0))
-                shorts = float(data[0].get('noncomm_positions_short_all', 0))
-                net_current = longs - shorts
+                # Current Week
+                longs_curr = float(data[0].get('noncomm_positions_long_all', 0))
+                shorts_curr = float(data[0].get('noncomm_positions_short_all', 0))
+                total_curr = longs_curr + shorts_curr
+                if total_curr == 0:
+                    return None
                 
+                net_curr = longs_curr - shorts_curr
+                
+                # Previous Week
                 longs_prev = float(data[1].get('noncomm_positions_long_all', 0))
                 shorts_prev = float(data[1].get('noncomm_positions_short_all', 0))
                 net_prev = longs_prev - shorts_prev
                 
-                score = 50 if net_current > 0 else -50
-                if net_current > net_prev: score += 50
-                elif net_current < net_prev: score -= 50
-                return score
+                # 1. Continuous Absolute Score (-50 to +50)
+                net_ratio_curr = net_curr / total_curr
+                abs_score = net_ratio_curr * 50.0
+                
+                # 2. Continuous Momentum Score (-50 to +50)
+                delta_net_ratio = (net_curr - net_prev) / total_curr
+                momentum_score = max(-50.0, min(50.0, delta_net_ratio * 250.0))
+                
+                # Combined Score (-100 to +100)
+                final_score = abs_score + momentum_score
+                return max(-100.0, min(100.0, final_score))
+                
     except Exception:
         pass
     return None
