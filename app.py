@@ -249,8 +249,11 @@ def get_put_call_ratio(etf_ticker):
 def calculate_sentiment_score(ticker_symbol, name):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        # --- PART A: LOUGHRAN-MCDONALD FINANCIAL NEWS SENTIMENT ---
         news_score = None
         try:
+            # Clean search query: strip parentheses to prevent query pollution
             clean_name = name.split("(")[0].strip()
             search_query = f"{clean_name} market news".replace(" ", "+")
             rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
@@ -262,8 +265,8 @@ def calculate_sentiment_score(ticker_symbol, name):
             lm = ps.LM()
             total_polarity = 0
             count = 0
-            seen_headlines = set()
             matched_headlines_count = 0
+            seen_headlines = set() # Deduplication filter
             
             for headline in headlines[1:16]:
                 text = headline.text
@@ -273,34 +276,29 @@ def calculate_sentiment_score(ticker_symbol, name):
                     continue
                 seen_headlines.add(text_lower)
                 
-                try:
-                    tokens = lm.tokenize(text)
-                    score_dict = lm.get_score(tokens)
-                    polarity = score_dict.get('Polarity', 0)
-                    
-                    if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0:
-                        matched_headlines_count += 1
-                    
-                    total_polarity += polarity
-                    count += 1
-                    
-                except Exception as e:
-                    pass
+                tokens = lm.tokenize(text)
+                score_dict = lm.get_score(tokens)
+                polarity = score_dict.get('Polarity', 0)
+                
+                if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0:
+                    matched_headlines_count += 1
+                
+                total_polarity += polarity
+                count += 1
                 
             if count > 0:
                 avg_polarity = total_polarity / count
                 
-                # Diagnostic printing
-                print(f"[DIAGNOSTIC] Asset: {name} | Raw Avg Polarity: {avg_polarity:.4f}", flush=True)
-                st.write(f"🛠️ **Diagnostic** | {name} Raw Polarity: `{avg_polarity:.4f}`")
+                # Empirically Calibrated Multiplier (225x scaling)
+                scaled_score = avg_polarity * 225.0
                 
-                scaled_score = avg_polarity * 150.0
-                
+                # Density Safety Check: Scale down if under 15% of headlines had LM matches
                 density_ratio = matched_headlines_count / count
                 if density_ratio < 0.15:
-                    scaled_score *= density_ratio / 0.15
+                    scaled_score *= (density_ratio / 0.15)
                 
                 news_score = max(-100, min(100, scaled_score))
+                
         except Exception:
             pass
 
@@ -336,7 +334,7 @@ def calculate_sentiment_score(ticker_symbol, name):
                 smart_money_score = pcr_score
                 smart_money_label = "Smart Money (Put/Call)"
 
-        # --- PART C: THE MASTER SENTIMENT SCORE ---
+        # --- PART C: MASTER SENTIMENT BLEND ---
         available_scores = []
         if news_score is not None: available_scores.append(news_score)
         if smart_money_score is not None: available_scores.append(smart_money_score)
