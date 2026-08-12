@@ -89,7 +89,7 @@ FRED_MACRO_TICKERS = {
 
 # 3. THE TECHNICAL ANALYSIS ENGINE
 @st.cache_data(ttl=3600)
-def calculate_technical_score(ticker_symbol):
+def calculate_daily_trend_score(ticker_symbol):
     try:
         asset = yf.Ticker(ticker_symbol)
         df = asset.history(period="1y")
@@ -155,6 +155,157 @@ def calculate_technical_score(ticker_symbol):
         return max(-100, min(100, score)), details
     except Exception:
         return 0, {"⚠️ STATUS": "Technical API Failure"}
+    
+
+# --- 4H DATA + INDICATORS (Patched for yfinance limitations) ---
+@st.cache_data(ttl=1800)  # 30 min cache
+def get_4h_indicators(ticker_symbol):
+    try:
+        asset = yf.Ticker(ticker_symbol)
+        # FIX: yfinance only supports up to 1h sub-daily. Fetch 1h, then resample to 4h.
+        df_1h = asset.history(period="60d", interval="1h") 
+        if df_1h.empty:
+            return None
+
+        # Resample 1H bars into true 4H bars
+        df = df_1h.resample('4h').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+        }).dropna()
+
+        if len(df) < 60:
+            return None
+
+        # Calculate Indicators
+        df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+
+        delta = df['Close'].diff()
+        gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        df['RSI_14'] = 100 - (100 / (1 + gain / loss))
+
+        ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
+        macd = ema_12 - ema_26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        df['MACD_hist'] = macd - signal
+
+        # ATR for retracement-depth normalization
+        high_low = df['High'] - df['Low']
+        high_close = (df['High'] - df['Close'].shift()).abs()
+        low_close = (df['Low'] - df['Close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR_14'] = tr.rolling(14).mean()
+
+        return df.dropna()
+    except Exception:
+        return None
+
+
+# --- 4H MOMENTUM SCORE ---
+def calculate_4h_momentum_score(df4h, daily_direction):
+    if df4h is None or len(df4h) < 5 or daily_direction == 0:
+        return 0
+
+    c = df4h.iloc[-1]
+    prev = df4h.iloc[-2]
+    score = 0
+
+    if daily_direction > 0:  # only score bullish momentum in a daily uptrend
+        if c['Close'] > c['EMA_20'] and c['EMA_20'] > prev['EMA_20']:
+            score += 30
+        if c['RSI_14'] > 55 and c['RSI_14'] > prev['RSI_14']:
+            score += 30
+        if c['MACD_hist'] > 0 and c['MACD_hist'] > prev['MACD_hist']:
+            score += 40
+    else:  # mirror for daily downtrend
+        if c['Close'] < c['EMA_20'] and c['EMA_20'] < prev['EMA_20']:
+            score += 30
+        if c['RSI_14'] < 45 and c['RSI_14'] < prev['RSI_14']:
+            score += 30
+        if c['MACD_hist'] < 0 and c['MACD_hist'] < prev['MACD_hist']:
+            score += 40
+        score = -score
+
+    return max(-100, min(100, score))
+
+
+# --- 4H PULLBACK SCORE ---
+def calculate_4h_pullback_score(df4h, daily_direction):
+    if df4h is None or len(df4h) < 5 or daily_direction == 0:
+        return 0
+
+    c = df4h.iloc[-1]
+    prev = df4h.iloc[-2]
+    atr = c['ATR_14']
+    if atr == 0 or pd.isna(atr):
+        return 0
+
+    dist_from_ema20_atr = (c['Close'] - c['EMA_20']) / atr
+    score = 0
+
+    if daily_direction > 0:  # bullish pullback
+        if -1.5 <= dist_from_ema20_atr <= 0.5:  
+            score += 30
+        if 30 <= c['RSI_14'] <= 50:
+            score += 30
+        if c['RSI_14'] > prev['RSI_14']:  # turning back up off the dip
+            score += 20
+        if c['MACD_hist'] > prev['MACD_hist']:  # histogram basing/improving
+            score += 20
+    else:  # bearish pullback
+        if -0.5 <= dist_from_ema20_atr <= 1.5:
+            score += 30
+        if 50 <= c['RSI_14'] <= 70:
+            score += 30
+        if c['RSI_14'] < prev['RSI_14']:
+            score += 20
+        if c['MACD_hist'] < prev['MACD_hist']:
+            score += 20
+        score = -score
+
+    return max(-100, min(100, score))
+
+
+# --- MASTER COMBINED TECHNICAL ENGINE ---
+@st.cache_data(ttl=1800)
+def calculate_technical_score(ticker_symbol):
+    try:
+        # 1. Get the Daily Macro Trend
+        daily_score, daily_details = calculate_daily_trend_score(ticker_symbol)
+        
+        # Determine Daily Bias: +1 (Bullish), -1 (Bearish), 0 (Neutral)
+        daily_direction = 1 if daily_score > 0 else (-1 if daily_score < 0 else 0)
+
+        # 2. Process 4-Hour Timeframe
+        df4h = get_4h_indicators(ticker_symbol)
+        momentum_score = calculate_4h_momentum_score(df4h, daily_direction)
+        pullback_score = calculate_4h_pullback_score(df4h, daily_direction)
+
+        # 3. Dynamic Switcher (Pick the strongest signal)
+        if abs(momentum_score) >= abs(pullback_score):
+            four_h_score = momentum_score
+            active_mode = "Momentum" if momentum_score != 0 else "Neutral"
+        else:
+            four_h_score = pullback_score
+            active_mode = "Pullback"
+
+        # 4. Blend the Scores (50% Daily Macro / 50% 4-Hour Trigger)
+        final_score = (daily_score * 0.5) + (four_h_score * 0.5)
+
+        # 5. Format Output for Streamlit UI
+        details = {
+            **daily_details,  # Unpacks the existing daily details dictionary
+            "4H Trading Mode": active_mode,
+            "4H Momentum Score": round(momentum_score, 1),
+            "4H Pullback Score": round(pullback_score, 1),
+            "4H Trigger Component": round(four_h_score, 1),
+        }
+
+        return max(-100, min(100, final_score)), details
+        
+    except Exception as e:
+        return 0, {"⚠️ STATUS": f"Technical API Failure: {str(e)}"}
 
 # 4. THE SEASONALITY ENGINE
 @st.cache_data(ttl=86400)
