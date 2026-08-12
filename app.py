@@ -249,11 +249,8 @@ def get_put_call_ratio(etf_ticker):
 def calculate_sentiment_score(ticker_symbol, name):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        
-        # --- PART A: LOUGHRAN-MCDONALD FINANCIAL NEWS SENTIMENT ---
         news_score = None
         try:
-            # Clean search query: remove parentheses/special characters to prevent query pollution
             clean_name = name.split("(")[0].strip()
             search_query = f"{clean_name} market news".replace(" ", "+")
             rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
@@ -262,28 +259,20 @@ def calculate_sentiment_score(ticker_symbol, name):
             soup = BeautifulSoup(rss_resp.content, features="xml")
             headlines = soup.find_all("title")
             
-            # Initialize the official Loughran-McDonald analyzer
             lm = ps.LM()
-            
             total_polarity = 0
             count = 0
-            seen_headlines = set() # Deduplication filter for syndication spam
+            seen_headlines = set()
             
             for headline in headlines[1:16]:
                 text = headline.text
                 text_lower = text.lower()
-                
-                # Deduplication check: skip if we've seen a near-identical title
                 if text_lower in seen_headlines:
                     continue
                 seen_headlines.add(text_lower)
                 
-                # Tokenize and score using the LM dictionary framework
                 tokens = lm.tokenize(text)
                 score_dict = lm.get_score(tokens)
-                
-                # score_dict returns counts and metrics like 'Positive', 'Negative', 'Polarity'
-                # We extract the 'Polarity' score calculated by the LM model for the headline
                 polarity = score_dict.get('Polarity', 0)
                 
                 total_polarity += polarity
@@ -291,8 +280,13 @@ def calculate_sentiment_score(ticker_symbol, name):
                 
             if count > 0:
                 avg_polarity = total_polarity / count
-                # Scale the LM polarity output to match your -100 to +100 distribution range
-                news_score = max(-100, min(100, avg_polarity * 500.0))
+                
+                # --- REVIEWER DIAGNOSTIC LOGGING ---
+                # Print raw avg_polarity to your terminal/console to inspect the real distribution
+                print(f"[DIAGNOSTIC] Asset: {name} | Raw Avg Polarity: {avg_polarity:.4f}")
+                
+                # Temporary scaling until you check your console logs
+                news_score = max(-100, min(100, avg_polarity * 150.0))
                 
         except Exception as e:
             pass
