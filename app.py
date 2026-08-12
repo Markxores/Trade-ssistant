@@ -272,15 +272,19 @@ def calculate_sentiment_score(ticker_symbol, name):
                     continue
                 seen_headlines.add(text_lower)
                 
-                tokens = lm.tokenize(text)
-                score_dict = lm.get_score(tokens)
-                polarity = score_dict.get('Polarity', 0)
-                
-                if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0:
-                    matched_headlines_count += 1
-                
-                total_polarity += polarity
-                count += 1
+                try:
+                    tokens = lm.tokenize(text)
+                    score_dict = lm.get_score(tokens)
+                    polarity = score_dict.get('Polarity', 0)
+                    
+                    if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0:
+                        matched_headlines_count += 1
+                    
+                    total_polarity += polarity
+                    count += 1
+                    
+                except Exception as e:
+                    pass
                 
             if count > 0:
                 avg_polarity = total_polarity / count
@@ -293,12 +297,9 @@ def calculate_sentiment_score(ticker_symbol, name):
                 
                 density_ratio = matched_headlines_count / count
                 if density_ratio < 0.15:
-                    scaled_score *= (density_ratio / 0.15)
+                    scaled_score *= density_ratio / 0.15
                 
                 news_score = max(-100, min(100, scaled_score))
-                
-                except Exception as e:
-                pass
 
         # --- PART B: INSTITUTIONAL SMART MONEY (COT & PCR) ---
         smart_money_score = None
