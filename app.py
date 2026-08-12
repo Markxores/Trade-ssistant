@@ -8,6 +8,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import pandas_datareader.data as web
 import datetime
 import pysentiment2 as ps
+from trading_ig import IGService
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="Quant Trade Engine", layout="wide")
@@ -200,6 +201,61 @@ INDEX_ETF_MAPPING = {
     "US 2000 (Russell 2000)": "IWM"
 }
 
+# --- THE IG SENTIMENT DICTIONARY ---
+IG_SENTIMENT_MAPPING = {
+    # Forex (Majors)
+    "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY",
+    "USD/CHF": "USDCHF", "USD/CAD": "USDCAD", "AUD/USD": "AUDUSD", "NZD/USD": "NZDUSD",
+    
+    # Forex (Minors & Crosses)
+    "EUR/GBP": "EURGBP", "EUR/JPY": "EURJPY", "GBP/JPY": "GBPJPY", "EUR/CHF": "EURCHF",
+    "AUD/JPY": "AUDJPY", "EUR/AUD": "EURAUD", "GBP/CHF": "GBPCHF", "CAD/JPY": "CADJPY",
+    "NZD/JPY": "NZDJPY", "AUD/NZD": "AUDNZD", "AUD/CAD": "AUDCAD", "AUD/CHF": "AUDCHF",
+    "CAD/CHF": "CADCHF", "EUR/CAD": "EURCAD", "EUR/NZD": "EURNZD", "GBP/AUD": "GBPAUD",
+    "GBP/CAD": "GBPCAD", "GBP/NZD": "GBPNZD", "NZD/CAD": "NZDCAD", "NZD/CHF": "NZDCHF",
+    
+    # Global Stock Indices
+    "US 30 (Dow Jones)": "WALLSTREET",
+    "US 500 (S&P 500)": "US500",
+    "US Tech 100 (Nasdaq)": "USTECH",
+    "US 2000 (Russell 2000)": "US2000",
+    "UK 100 (FTSE)": "FTSE100",
+    "Germany 40 (DAX)": "GERMANY40",
+    "France 40 (CAC)": "FRANCE40",
+    "Europe 50 (Euro Stoxx)": "EU50",
+    "Japan 225 (Nikkei)": "JAPAN225",
+    "Hong Kong 50 (Hang Seng)": "HONGKONG50",
+    "Australia 200 (ASX)": "AUSTRALIA200",
+    
+    # Precious Metals & Commodities
+    "Gold": "GOLD", 
+    "Silver": "SILVER", 
+    "Copper": "COPPER", 
+    "Platinum": "PLATINUM",
+    "Palladium": "PALLADIUM", 
+    "Zinc": "ZINC",
+    "Crude Oil (WTI)": "USCRUDE", 
+    "Brent Crude": "BRENT", 
+    "Natural Gas": "NATGAS",
+    
+    # Crypto
+    "BTC/USD (Bitcoin)": "BITCOIN",
+    "ETH/USD (Ethereum)": "ETHER",
+    "XRP/USD (Ripple)": "RIPPLE",
+    "LTC/USD (Litecoin)": "LITECOIN",
+    "BCH/USD (Bitcoin Cash)": "BITCOINCASH",
+    "ADA/USD (Cardano)": "CARDANO",
+    "DOGE/USD (Dogecoin)": "DOGECOIN",
+    "LINK/USD (Chainlink)": "CHAINLINK",
+    "DOT/USD (Polkadot)": "POLKADOT",
+    "SOL/USD (Solana)": "SOLANA",
+    "AVAX/USD (Avalanche)": "AVALANCHE",
+    "MATIC/USD (Polygon)": "POLYGON",
+    "UNI/USD (Uniswap)": "UNISWAP",
+    "XLM/USD (Stellar)": "STELLAR",
+    "ATOM/USD (Cosmos)": "COSMOS"
+}
+
 # HELPER FUNCTION: Fetches the raw CFTC score for a single asset/currency
 def get_cftc_score(cftc_code):
     try:
@@ -242,6 +298,40 @@ def get_put_call_ratio(etf_ticker):
         if pcr > 1.0: return 50
         elif pcr < 0.7: return -50
         else: return 0
+    except Exception:
+        return None
+@st.cache_data(ttl=3600)
+def get_ig_retail_sentiment(instrument_name):
+    try:
+        market_id = IG_SENTIMENT_MAPPING.get(instrument_name)
+        if not market_id:
+            return None
+            
+        # Connect to IG Markets using Streamlit Secrets
+        ig_service = IGService(
+            st.secrets["ig_markets"]["username"],
+            st.secrets["ig_markets"]["password"],
+            st.secrets["ig_markets"]["api_key"],
+            st.secrets["ig_markets"]["acc_type"]
+        )
+        ig_service.create_session()
+        
+        # Fetch client sentiment
+        sentiment = ig_service.fetch_client_sentiment_by_instrument(market_id)
+        
+        long_pct = float(sentiment.get('longPositionPercentage', 0))
+        short_pct = float(sentiment.get('shortPositionPercentage', 0))
+        
+        if long_pct == 0 and short_pct == 0:
+            return None
+            
+        # CONTRARIAN SCORING LOGIC
+        # If retail is 80% Long and 20% Short, net is +60. Contrarian score becomes -60 (Bearish).
+        net_retail = long_pct - short_pct
+        contrarian_score = -net_retail
+        
+        return contrarian_score
+        
     except Exception:
         return None
 
@@ -334,10 +424,13 @@ def calculate_sentiment_score(ticker_symbol, name):
                 smart_money_score = pcr_score
                 smart_money_label = "Smart Money (Put/Call)"
 
-        # --- PART C: MASTER SENTIMENT BLEND ---
+        # --- PART C: THE MASTER SENTIMENT SCORE ---
+        retail_score = get_ig_retail_sentiment(name)
+        
         available_scores = []
         if news_score is not None: available_scores.append(news_score)
         if smart_money_score is not None: available_scores.append(smart_money_score)
+        if retail_score is not None: available_scores.append(retail_score)
         
         if len(available_scores) > 0:
             final_score = sum(available_scores) / len(available_scores)
@@ -346,7 +439,8 @@ def calculate_sentiment_score(ticker_symbol, name):
 
         details = {
             "News (Loughran-McDonald)": round(news_score, 2) if news_score is not None else "No Data",
-            smart_money_label: round(smart_money_score, 2) if smart_money_score is not None else "No Data"
+            smart_money_label: round(smart_money_score, 2) if smart_money_score is not None else "No Data",
+            "Retail Sentiment (IG Contrarian)": round(retail_score, 2) if retail_score is not None else "No Data"
         }
         return max(-100, min(100, final_score)), details
 

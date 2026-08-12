@@ -8,3 +8,4 @@ vaderSentiment
 pandas-datareader
 lxml
 pysentiment2
+trading-ig
