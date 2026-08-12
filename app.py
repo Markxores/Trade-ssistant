@@ -278,15 +278,25 @@ def calculate_sentiment_score(ticker_symbol, name):
                 total_polarity += polarity
                 count += 1
                 
-            if count > 0:
+           if count > 0:
                 avg_polarity = total_polarity / count
                 
                 # --- REVIEWER DIAGNOSTIC LOGGING ---
-                # Print raw avg_polarity to your terminal/console to inspect the real distribution
-                print(f"[DIAGNOSTIC] Asset: {name} | Raw Avg Polarity: {avg_polarity:.4f}")
+                # 1. Force the cloud terminal to immediately print (bypassing the buffer)
+                print(f"[DIAGNOSTIC] Asset: {name} | Raw Avg Polarity: {avg_polarity:.4f}", flush=True)
                 
-                # Temporary scaling until you check your console logs
-                news_score = max(-100, min(100, avg_polarity * 150.0))
+                # 2. Print directly to the web dashboard so you don't even need the terminal!
+                st.write(f"🛠️ **Diagnostic** | {name} Raw Polarity: `{avg_polarity:.4f}`")
+                
+                # Temporary scaling until you check your numbers
+                scaled_score = avg_polarity * 150.0
+                
+                # DENSITY SAFETY CHECK
+                density_ratio = matched_headlines_count / count
+                if density_ratio < 0.15:
+                    scaled_score *= (density_ratio / 0.15)
+                
+                news_score = max(-100, min(100, scaled_score))
                 
         except Exception as e:
             pass
