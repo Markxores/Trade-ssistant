@@ -263,6 +263,7 @@ def calculate_sentiment_score(ticker_symbol, name):
             total_polarity = 0
             count = 0
             seen_headlines = set()
+            matched_headlines_count = 0
             
             for headline in headlines[1:16]:
                 text = headline.text
@@ -300,6 +301,8 @@ def calculate_sentiment_score(ticker_symbol, name):
                     scaled_score *= density_ratio / 0.15
                 
                 news_score = max(-100, min(100, scaled_score))
+        except Exception:
+            pass
 
         # --- PART B: INSTITUTIONAL SMART MONEY (COT & PCR) ---
         smart_money_score = None
