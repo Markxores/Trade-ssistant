@@ -267,6 +267,7 @@ def calculate_sentiment_score(ticker_symbol, name):
             for headline in headlines[1:16]:
                 text = headline.text
                 text_lower = text.lower()
+                
                 if text_lower in seen_headlines:
                     continue
                 seen_headlines.add(text_lower)
@@ -275,31 +276,29 @@ def calculate_sentiment_score(ticker_symbol, name):
                 score_dict = lm.get_score(tokens)
                 polarity = score_dict.get('Polarity', 0)
                 
+                if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0:
+                    matched_headlines_count += 1
+                
                 total_polarity += polarity
                 count += 1
                 
-           if count > 0:
+            if count > 0:
                 avg_polarity = total_polarity / count
                 
-                # --- REVIEWER DIAGNOSTIC LOGGING ---
-                # 1. Force the cloud terminal to immediately print (bypassing the buffer)
+                # Diagnostic printing
                 print(f"[DIAGNOSTIC] Asset: {name} | Raw Avg Polarity: {avg_polarity:.4f}", flush=True)
-                
-                # 2. Print directly to the web dashboard so you don't even need the terminal!
                 st.write(f"🛠️ **Diagnostic** | {name} Raw Polarity: `{avg_polarity:.4f}`")
                 
-                # Temporary scaling until you check your numbers
                 scaled_score = avg_polarity * 150.0
                 
-                # DENSITY SAFETY CHECK
                 density_ratio = matched_headlines_count / count
                 if density_ratio < 0.15:
                     scaled_score *= (density_ratio / 0.15)
                 
                 news_score = max(-100, min(100, scaled_score))
                 
-        except Exception as e:
-            pass
+                except Exception as e:
+                pass
 
         # --- PART B: INSTITUTIONAL SMART MONEY (COT & PCR) ---
         smart_money_score = None
