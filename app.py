@@ -459,12 +459,22 @@ def get_put_call_ratio(etf_ticker):
             
         pcr = put_vol / call_vol
         
-        # Contrarian Scoring: High PCR (Fear) = Bullish, Low PCR (Greed) = Bearish
-        if pcr > 1.0: return 50
-        elif pcr < 0.7: return -50
-        else: return 0
+        # --- CONTINUOUS CONTRARIAN SCORING ---
+        # Neutral equity baseline is ~0.85. 
+        # High PCR (Fear) = Bullish, Low PCR (Greed) = Bearish
+        neutral_baseline = 0.85
+        deviation = pcr - neutral_baseline
+        
+        # Scale factor of 200 maps the deviation to a -100 to +100 spectrum
+        continuous_score = deviation * 200.0
+        
+        # Clamp the final score between -100 and +100
+        return max(-100.0, min(100.0, continuous_score))
+        
     except Exception:
         return None
+
+    
 # --- create ONE session, reused for the whole app run ---
 @st.cache_resource
 def get_ig_session():
