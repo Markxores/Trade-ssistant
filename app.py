@@ -452,7 +452,7 @@ def get_cftc_score(cftc_code):
         pass
     return None
 # HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
-def get_put_call_ratio(etf_ticker, min_volume_threshold=500):
+def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
     try:
         asset = yf.Ticker(etf_ticker)
         expirations = asset.options
@@ -485,7 +485,6 @@ def get_put_call_ratio(etf_ticker, min_volume_threshold=500):
         
     except Exception:
         return None
-
     
 # --- create ONE session, reused for the whole app run ---
 @st.cache_resource
