@@ -366,17 +366,17 @@ IG_SENTIMENT_MAPPING = {
     "GBP/CAD": "GBPCAD", "GBP/NZD": "GBPNZD", "NZD/CAD": "NZDCAD", "NZD/CHF": "NZDCHF",
     
     # Global Stock Indices
-    "US 30 (Dow Jones)": "US30",
+    "US 30 (Dow Jones)": "WALL",
     "US 500 (S&P 500)": "US500",
     "US Tech 100 (Nasdaq)": "USTECH",
-    "US 2000 (Russell 2000)": "RUT",
+    "US 2000 (Russell 2000)": "R2000",
     "UK 100 (FTSE)": "FT100",
-    "Germany 40 (DAX)": "DAX",
-    "France 40 (CAC)": "FRA40",
+    "Germany 40 (DAX)": "DE30",
+    "France 40 (CAC)": "FR40",
     "Europe 50 (Euro Stoxx)": "EU50",
     "Japan 225 (Nikkei)": "JP225",
-    "Hong Kong 50 (Hang Seng)": "HK50",
-    "Australia 200 (ASX)": "AUS200",
+    "Hong Kong 50 (Hang Seng)": "HS34",
+    "Australia 200 (ASX)": "AU200",
     
     # Precious Metals & Commodities (Using Standard CME/NYMEX Tickers)
     "Gold": "GC", 
