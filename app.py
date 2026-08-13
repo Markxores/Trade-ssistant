@@ -456,32 +456,48 @@ def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
     try:
         asset = yf.Ticker(etf_ticker)
         expirations = asset.options
-        if not expirations: return None
-            
-        chain = asset.option_chain(expirations[0])
-        put_vol = chain.puts['volume'].sum()
-        call_vol = chain.calls['volume'].sum()
-        
-        # --- LIQUIDITY FLOOR SAFETY CHECK ---
-        total_vol = put_vol + call_vol
-        
-        # If no calls traded (divide by zero risk) OR total volume is too thin
-        if call_vol == 0 or total_vol < min_volume_threshold: 
+        if not expirations:
             return None
             
-        pcr = put_vol / call_vol
-        
-        # --- CONTINUOUS CONTRARIAN SCORING ---
-        # Neutral equity baseline is ~0.85. 
-        # High PCR (Fear) = Bullish, Low PCR (Greed) = Bearish
+        chain = asset.option_chain(expirations[0])
         neutral_baseline = 0.85
-        deviation = pcr - neutral_baseline
         
-        # Scale factor of 200 maps the deviation to a -100 to +100 spectrum
-        continuous_score = deviation * 200.0
+        # --- 1. STRUCTURAL OPEN INTEREST SCORE ---
+        oi_put = chain.puts['openInterest'].sum()
+        oi_call = chain.calls['openInterest'].sum()
+        total_oi = oi_put + oi_call
         
-        # Clamp the final score between -100 and +100
-        return max(-100.0, min(100.0, continuous_score))
+        score_oi = None
+        if oi_call > 0 and total_oi >= min_volume_threshold:
+            pcr_oi = oi_put / oi_call
+            dev_oi = pcr_oi - neutral_baseline
+            score_oi = max(-100.0, min(100.0, dev_oi * 200.0))
+            
+        # --- 2. ACTIVE INTRADAY VOLUME SCORE ---
+        vol_put = chain.puts['volume'].sum()
+        vol_call = chain.calls['volume'].sum()
+        total_vol = vol_put + vol_call
+        
+        score_vol = None
+        if vol_call > 0 and total_vol >= min_volume_threshold:
+            pcr_vol = vol_put / vol_call
+            dev_vol = pcr_vol - neutral_baseline
+            score_vol = max(-100.0, min(100.0, dev_vol * 200.0))
+            
+        # --- 3. DUAL-COMPONENT COMPOSITE BLEND ---
+        if score_oi is not None and score_vol is not None:
+            # Active Trading Session: 50% Structural OI + 50% Intraday Flow
+            final_score = (score_oi * 0.50) + (score_vol * 0.50)
+        elif score_oi is not None:
+            # Pre-Market / Low Volume Session: Fallback 100% to Structural OI
+            final_score = score_oi
+        elif score_vol is not None:
+            # High Intraday Volume with Unreported OI: Fallback 100% to Volume
+            final_score = score_vol
+        else:
+            return None
+            
+        return max(-100.0, min(100.0, final_score))
         
     except Exception:
         return None
