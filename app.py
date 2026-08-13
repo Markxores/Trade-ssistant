@@ -349,7 +349,14 @@ INDEX_ETF_MAPPING = {
     "US 500 (S&P 500)": "SPY",
     "US Tech 100 (Nasdaq)": "QQQ",
     "US 30 (Dow Jones)": "DIA",
-    "US 2000 (Russell 2000)": "IWM"
+    "US 2000 (Russell 2000)": "IWM",
+    "UK 100 (FTSE)": "EWU",
+    "Germany 40 (DAX)": "EWG",
+    "France 40 (CAC)": "EWQ",
+    "Europe 50 (Euro Stoxx)": "FEZ",
+    "Japan 225 (Nikkei)": "EWJ",
+    "Hong Kong 50 (Hang Seng)": "EWH",
+    "Australia 200 (ASX)": "EWA"
 }
 
 # --- THE IG SENTIMENT DICTIONARY
@@ -445,7 +452,7 @@ def get_cftc_score(cftc_code):
         pass
     return None
 # HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
-def get_put_call_ratio(etf_ticker):
+def get_put_call_ratio(etf_ticker, min_volume_threshold=500):
     try:
         asset = yf.Ticker(etf_ticker)
         expirations = asset.options
@@ -455,7 +462,12 @@ def get_put_call_ratio(etf_ticker):
         put_vol = chain.puts['volume'].sum()
         call_vol = chain.calls['volume'].sum()
         
-        if call_vol == 0: return None
+        # --- LIQUIDITY FLOOR SAFETY CHECK ---
+        total_vol = put_vol + call_vol
+        
+        # If no calls traded (divide by zero risk) OR total volume is too thin
+        if call_vol == 0 or total_vol < min_volume_threshold: 
+            return None
             
         pcr = put_vol / call_vol
         
