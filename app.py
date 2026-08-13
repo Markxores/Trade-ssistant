@@ -456,17 +456,20 @@ def get_cftc_score(cftc_code):
 # HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
 def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
     try:
+        import pandas as pd
         asset = yf.Ticker(etf_ticker)
         expirations = asset.options
         if not expirations:
+            print(f"[{etf_ticker}] API returned no options expirations.")
             return None
             
         chain = asset.option_chain(expirations[0])
         neutral_baseline = 0.85
         
-        # --- 1. STRUCTURAL OPEN INTEREST SCORE ---
-        oi_put = chain.puts['openInterest'].sum()
-        oi_call = chain.calls['openInterest'].sum()
+        # --- 1. STRUCTURAL OPEN INTEREST SCORE (Armored) ---
+        # Safely attempts to get the column; defaults to empty series if missing, fills NaNs with 0
+        oi_put = chain.puts.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
+        oi_call = chain.calls.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
         total_oi = oi_put + oi_call
         
         score_oi = None
@@ -475,9 +478,9 @@ def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
             dev_oi = pcr_oi - neutral_baseline
             score_oi = max(-100.0, min(100.0, dev_oi * 200.0))
             
-        # --- 2. ACTIVE INTRADAY VOLUME SCORE ---
-        vol_put = chain.puts['volume'].sum()
-        vol_call = chain.calls['volume'].sum()
+        # --- 2. ACTIVE INTRADAY VOLUME SCORE (Armored) ---
+        vol_put = chain.puts.get('volume', pd.Series(dtype=float)).fillna(0).sum()
+        vol_call = chain.calls.get('volume', pd.Series(dtype=float)).fillna(0).sum()
         total_vol = vol_put + vol_call
         
         score_vol = None
@@ -491,17 +494,20 @@ def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
             # Active Trading Session: 50% Structural OI + 50% Intraday Flow
             final_score = (score_oi * 0.50) + (score_vol * 0.50)
         elif score_oi is not None:
-            # Pre-Market / Low Volume Session: Fallback 100% to Structural OI
+            # Pre-Market / Missing Volume Session: Fallback 100% to Structural OI
             final_score = score_oi
         elif score_vol is not None:
             # High Intraday Volume with Unreported OI: Fallback 100% to Volume
             final_score = score_vol
         else:
+            print(f"[{etf_ticker}] Liquidity too low: OI={total_oi}, Vol={total_vol}")
             return None
             
         return max(-100.0, min(100.0, final_score))
         
-    except Exception:
+    except Exception as e:
+        # If a massive failure happens, print it directly to your terminal log
+        print(f"[{etf_ticker}] FATAL PCR ERROR: {str(e)}")
         return None
     
 # --- create ONE session, reused for the whole app run ---
