@@ -451,6 +451,8 @@ def get_cftc_score(cftc_code):
     except Exception:
         pass
     return None
+
+
 # HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
 def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
     try:
