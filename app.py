@@ -352,7 +352,7 @@ INDEX_ETF_MAPPING = {
     "US 2000 (Russell 2000)": "IWM"
 }
 
-# --- THE IG SENTIMENT DICTIONARY ---
+# --- THE IG SENTIMENT DICTIONARY
 IG_SENTIMENT_MAPPING = {
     # Forex (Majors)
     "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY",
@@ -366,28 +366,28 @@ IG_SENTIMENT_MAPPING = {
     "GBP/CAD": "GBPCAD", "GBP/NZD": "GBPNZD", "NZD/CAD": "NZDCAD", "NZD/CHF": "NZDCHF",
     
     # Global Stock Indices
-    "US 30 (Dow Jones)": "WALLSTREET",
+    "US 30 (Dow Jones)": "US30",
     "US 500 (S&P 500)": "US500",
     "US Tech 100 (Nasdaq)": "USTECH",
-    "US 2000 (Russell 2000)": "US2000",
-    "UK 100 (FTSE)": "FTSE100",
-    "Germany 40 (DAX)": "GERMANY40",
-    "France 40 (CAC)": "FRANCE40",
+    "US 2000 (Russell 2000)": "RUT",
+    "UK 100 (FTSE)": "FT100",
+    "Germany 40 (DAX)": "DAX",
+    "France 40 (CAC)": "FRA40",
     "Europe 50 (Euro Stoxx)": "EU50",
-    "Japan 225 (Nikkei)": "JAPAN225",
-    "Hong Kong 50 (Hang Seng)": "HONGKONG50",
-    "Australia 200 (ASX)": "AUSTRALIA200",
+    "Japan 225 (Nikkei)": "JP225",
+    "Hong Kong 50 (Hang Seng)": "HK50",
+    "Australia 200 (ASX)": "AUS200",
     
-    # Precious Metals & Commodities
-    "Gold": "GOLD", 
-    "Silver": "SILVER", 
-    "Copper": "COPPER", 
-    "Platinum": "PLATINUM",
-    "Palladium": "PALLADIUM", 
-    "Zinc": "ZINC",
-    "Crude Oil (WTI)": "USCRUDE", 
-    "Brent Crude": "BRENT", 
-    "Natural Gas": "NATGAS",
+    # Precious Metals & Commodities (Using Standard CME/NYMEX Tickers)
+    "Gold": "GC", 
+    "Silver": "SI", 
+    "Copper": "HG", 
+    "Platinum": "PL",
+    "Palladium": "PA", 
+    "Zinc": "ZNC",
+    "Crude Oil (WTI)": "CL", 
+    "Brent Crude": "LCO", 
+    "Natural Gas": "NG",
     
     # Crypto
     "BTC/USD (Bitcoin)": "BITCOIN",
