@@ -465,30 +465,38 @@ def get_put_call_ratio(etf_ticker):
         else: return 0
     except Exception:
         return None
+# --- create ONE session, reused for the whole app run ---
+@st.cache_resource
+def get_ig_session():
+    ig_service = IGService(
+        st.secrets["ig_markets"]["username"],
+        st.secrets["ig_markets"]["password"],
+        st.secrets["ig_markets"]["api_key"],
+        st.secrets["ig_markets"]["acc_type"]
+    )
+    ig_service.create_session()
+    return ig_service
+
 @st.cache_data(ttl=3600)
-def get_ig_retail_sentiment(instrument_name):
+def get_ig_retail_sentiment(instrument_name, _ig_service):
     try:
         market_id = IG_SENTIMENT_MAPPING.get(instrument_name)
         if not market_id:
             return None
-            
-        # Connect to IG Markets using Streamlit Secrets
-        ig_service = IGService(
-            st.secrets["ig_markets"]["username"],
-            st.secrets["ig_markets"]["password"],
-            st.secrets["ig_markets"]["api_key"],
-            st.secrets["ig_markets"]["acc_type"]
-        )
-        ig_service.create_session()
-        
-        # Fetch client sentiment
-        sentiment = ig_service.fetch_client_sentiment_by_instrument(market_id)
-        
+
+        sentiment = _ig_service.fetch_client_sentiment_by_instrument(market_id)
+
         long_pct = float(sentiment.get('longPositionPercentage', 0))
         short_pct = float(sentiment.get('shortPositionPercentage', 0))
-        
+
         if long_pct == 0 and short_pct == 0:
             return None
+
+        net_retail = long_pct - short_pct
+        return -net_retail  # contrarian scoring
+
+    except Exception:
+        return None
             
         # CONTRARIAN SCORING LOGIC
         # If retail is 80% Long and 20% Short, net is +60. Contrarian score becomes -60 (Bearish).
