@@ -498,15 +498,6 @@ def get_ig_retail_sentiment(instrument_name, _ig_service):
     except Exception:
         return None
             
-        # CONTRARIAN SCORING LOGIC
-        # If retail is 80% Long and 20% Short, net is +60. Contrarian score becomes -60 (Bearish).
-        net_retail = long_pct - short_pct
-        contrarian_score = -net_retail
-        
-        return contrarian_score
-        
-    except Exception:
-        return None
 
 @st.cache_data(ttl=3600)
 def calculate_sentiment_score(ticker_symbol, name):
@@ -598,7 +589,7 @@ def calculate_sentiment_score(ticker_symbol, name):
                 smart_money_label = "Smart Money (Put/Call)"
 
         # --- PART C: THE MASTER SENTIMENT SCORE ---
-        retail_score = get_ig_retail_sentiment(name)
+        retail_score = get_ig_retail_sentiment(name, get_ig_session())
         
         available_scores = []
         if news_score is not None: available_scores.append(news_score)
