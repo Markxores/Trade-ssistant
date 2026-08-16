@@ -311,7 +311,6 @@ def calculate_technical_score(ticker_symbol):
 @st.cache_data(ttl=86400)
 def calculate_seasonality_score(ticker_symbol):
     try:
-        import datetime
         asset = yf.Ticker(ticker_symbol)
         df = asset.history(period="10y", interval="1mo")
         if df.empty: return 0, {"⚠️ STATUS": "No Seasonality Data"}
