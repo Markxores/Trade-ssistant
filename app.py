@@ -452,22 +452,35 @@ def get_cftc_score(cftc_code):
         pass
     return None
 
+# --- ANTI-BLOCKING MEASURE: Create a spoofed browser session ---
+@st.cache_resource
+def get_yf_session():
+    import requests
+    session = requests.Session()
+    # Tell Yahoo we are a standard Windows Chrome Browser, not a Python bot
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    })
+    return session
 
 # HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
 def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
     try:
         import pandas as pd
-        asset = yf.Ticker(etf_ticker)
+        
+        # 1. Grab the spoofed browser session and pass it to yfinance
+        session = get_yf_session()
+        asset = yf.Ticker(etf_ticker, session=session)
+        
         expirations = asset.options
         if not expirations:
-            print(f"[{etf_ticker}] API returned no options expirations.")
+            print(f"[{etf_ticker}] YFINANCE BLOCKED: API returned no options expirations.")
             return None
             
         chain = asset.option_chain(expirations[0])
         neutral_baseline = 0.85
         
         # --- 1. STRUCTURAL OPEN INTEREST SCORE (Armored) ---
-        # Safely attempts to get the column; defaults to empty series if missing, fills NaNs with 0
         oi_put = chain.puts.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
         oi_call = chain.calls.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
         total_oi = oi_put + oi_call
@@ -506,7 +519,6 @@ def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
         return max(-100.0, min(100.0, final_score))
         
     except Exception as e:
-        # If a massive failure happens, print it directly to your terminal log
         print(f"[{etf_ticker}] FATAL PCR ERROR: {str(e)}")
         return None
     
