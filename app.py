@@ -464,9 +464,8 @@ def get_yf_session():
     return session
 
 # HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
-def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
+def get_put_call_ratio(etf_ticker, min_volume_threshold=100, min_oi_leg=30, min_vol_leg=20):
     try:
-        import pandas as pd
         
         # 1. Grab the spoofed browser session and pass it to yfinance
         session = get_yf_session()
@@ -480,24 +479,24 @@ def get_put_call_ratio(etf_ticker, min_volume_threshold=100):
         chain = asset.option_chain(expirations[0])
         neutral_baseline = 0.85
         
-        # --- 1. STRUCTURAL OPEN INTEREST SCORE (Armored) ---
+        # --- 1. STRUCTURAL OPEN INTEREST SCORE (Armored + Per-Leg Liquidity Check) ---
         oi_put = chain.puts.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
         oi_call = chain.calls.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
         total_oi = oi_put + oi_call
         
         score_oi = None
-        if oi_call > 0 and total_oi >= min_volume_threshold:
+        if oi_put >= min_oi_leg and oi_call >= min_oi_leg and total_oi >= min_volume_threshold:
             pcr_oi = oi_put / oi_call
             dev_oi = pcr_oi - neutral_baseline
             score_oi = max(-100.0, min(100.0, dev_oi * 200.0))
             
-        # --- 2. ACTIVE INTRADAY VOLUME SCORE (Armored) ---
+        # --- 2. ACTIVE INTRADAY VOLUME SCORE (Armored + Per-Leg Liquidity Check) ---
         vol_put = chain.puts.get('volume', pd.Series(dtype=float)).fillna(0).sum()
         vol_call = chain.calls.get('volume', pd.Series(dtype=float)).fillna(0).sum()
         total_vol = vol_put + vol_call
         
         score_vol = None
-        if vol_call > 0 and total_vol >= min_volume_threshold:
+        if vol_put >= min_vol_leg and vol_call >= min_vol_leg and total_vol >= min_volume_threshold:
             pcr_vol = vol_put / vol_call
             dev_vol = pcr_vol - neutral_baseline
             score_vol = max(-100.0, min(100.0, dev_vol * 200.0))
