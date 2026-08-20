@@ -1,0 +1,8 @@
+window_bars,window_days,bear_signal_rate,bear_random_rate,bear_p_value,bear_significant,bull_signal_rate,bull_random_rate,bull_p_value,bull_significant
+12,0.5,7.0,5.2,0.7839,False,10.1,2.2,0.0102,True
+24,1.0,17.4,12.2,0.3531,False,26.1,10.1,0.0009,True
+48,2.0,30.4,17.4,0.0299,True,45.7,19.6,0.0,True
+72,3.0,40.9,31.3,0.1696,False,52.2,25.4,0.0,True
+96,4.0,50.4,37.4,0.0626,False,57.2,32.6,0.0001,True
+144,6.0,53.9,62.6,0.2287,False,68.1,67.4,1.0,False
+192,8.0,59.1,73.9,0.0251,True,73.2,72.5,1.0,False
