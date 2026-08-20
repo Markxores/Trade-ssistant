@@ -462,79 +462,89 @@ def get_yf_session():
     })
     return session
 
-# HELPER FUNCTION: Fetches Put/Call ratio for US Indices via ETF proxies
-def get_put_call_ratio(etf_ticker, min_volume_threshold=100, min_oi_leg=30, min_vol_leg=20):
+# HELPER FUNCTION: Fetches Put/Call ratio for US & Global Indices via ETF proxies
+def get_put_call_ratio(etf_ticker, min_threshold=30):
     try:
-        
-        # 1. Grab the spoofed browser session and pass it to yfinance
+        import pandas as pd
         session = get_yf_session()
         asset = yf.Ticker(etf_ticker, session=session)
         
         expirations = asset.options
         if not expirations:
-            print(f"[{etf_ticker}] YFINANCE BLOCKED: API returned no options expirations.")
+            print(f"[{etf_ticker}] API returned no options expirations.")
             return None
             
-        chain = asset.option_chain(expirations[0])
         neutral_baseline = 0.85
+        total_oi_put, total_oi_call = 0.0, 0.0
+        total_vol_put, total_vol_call = 0.0, 0.0
         
-        # --- 1. STRUCTURAL OPEN INTEREST SCORE (Armored + Per-Leg Liquidity Check) ---
-        oi_put = chain.puts.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
-        oi_call = chain.calls.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
-        total_oi = oi_put + oi_call
-        
+        # Scan up to the front 3 expirations to capture monthly institutional liquidity
+        for exp in expirations[:3]:
+            try:
+                chain = asset.option_chain(exp)
+                total_oi_put += chain.puts.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
+                total_oi_call += chain.calls.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
+                total_vol_put += chain.puts.get('volume', pd.Series(dtype=float)).fillna(0).sum()
+                total_vol_call += chain.calls.get('volume', pd.Series(dtype=float)).fillna(0).sum()
+            except Exception:
+                continue
+
+        # 1. Structural Open Interest Score
         score_oi = None
-        if oi_put >= min_oi_leg and oi_call >= min_oi_leg and total_oi >= min_volume_threshold:
-            pcr_oi = oi_put / oi_call
+        total_oi = total_oi_put + total_oi_call
+        if total_oi_call > 0 and total_oi >= min_threshold:
+            pcr_oi = total_oi_put / total_oi_call
             dev_oi = pcr_oi - neutral_baseline
             score_oi = max(-100.0, min(100.0, dev_oi * 200.0))
-            
-        # --- 2. ACTIVE INTRADAY VOLUME SCORE (Armored + Per-Leg Liquidity Check) ---
-        vol_put = chain.puts.get('volume', pd.Series(dtype=float)).fillna(0).sum()
-        vol_call = chain.calls.get('volume', pd.Series(dtype=float)).fillna(0).sum()
-        total_vol = vol_put + vol_call
-        
+
+        # 2. Active Intraday Volume Score
         score_vol = None
-        if vol_put >= min_vol_leg and vol_call >= min_vol_leg and total_vol >= min_volume_threshold:
-            pcr_vol = vol_put / vol_call
+        total_vol = total_vol_put + total_vol_call
+        if total_vol_call > 0 and total_vol >= min_threshold:
+            pcr_vol = total_vol_put / total_vol_call
             dev_vol = pcr_vol - neutral_baseline
             score_vol = max(-100.0, min(100.0, dev_vol * 200.0))
-            
-        # --- 3. DUAL-COMPONENT COMPOSITE BLEND ---
+
+        # 3. Dynamic Composite Blend
         if score_oi is not None and score_vol is not None:
-            # Active Trading Session: 50% Structural OI + 50% Intraday Flow
             final_score = (score_oi * 0.50) + (score_vol * 0.50)
         elif score_oi is not None:
-            # Pre-Market / Missing Volume Session: Fallback 100% to Structural OI
             final_score = score_oi
         elif score_vol is not None:
-            # High Intraday Volume with Unreported OI: Fallback 100% to Volume
             final_score = score_vol
         else:
-            print(f"[{etf_ticker}] Liquidity too low: OI={total_oi}, Vol={total_vol}")
+            print(f"[{etf_ticker}] Combined Liquidity below threshold: OI={total_oi}, Vol={total_vol}")
             return None
-            
+
         return max(-100.0, min(100.0, final_score))
         
     except Exception as e:
         print(f"[{etf_ticker}] FATAL PCR ERROR: {str(e)}")
         return None
     
-# --- create ONE session, reused for the whole app run ---
-@st.cache_resource
+# --- create ONE session, reused, but forced to re-authenticate every 12 hours ---
+@st.cache_resource(ttl=43200) # 43200 seconds = 12 hours
 def get_ig_session():
-    ig_service = IGService(
-        st.secrets["ig_markets"]["username"],
-        st.secrets["ig_markets"]["password"],
-        st.secrets["ig_markets"]["api_key"],
-        st.secrets["ig_markets"]["acc_type"]
-    )
-    ig_service.create_session()
-    return ig_service
+    try:
+        ig_service = IGService(
+            st.secrets["ig_markets"]["username"],
+            st.secrets["ig_markets"]["password"],
+            st.secrets["ig_markets"]["api_key"],
+            st.secrets["ig_markets"]["acc_type"]
+        )
+        ig_service.create_session()
+        return ig_service
+    except Exception as e:
+        print(f"CRITICAL: Failed to create IG Session: {str(e)}")
+        return None
 
 @st.cache_data(ttl=3600)
 def get_ig_retail_sentiment(instrument_name, _ig_service):
     try:
+        # If the session failed to build, abort early
+        if _ig_service is None:
+            return None
+            
         market_id = IG_SENTIMENT_MAPPING.get(instrument_name)
         if not market_id:
             return None
@@ -550,7 +560,9 @@ def get_ig_retail_sentiment(instrument_name, _ig_service):
         net_retail = long_pct - short_pct
         return -net_retail  # contrarian scoring
 
-    except Exception:
+    except Exception as e:
+        # Unmask the error! Print it directly to the terminal.
+        print(f"[{instrument_name}] IG RETAIL ERROR: {str(e)}")
         return None
             
 
@@ -638,10 +650,11 @@ def calculate_sentiment_score(ticker_symbol, name):
                 smart_money_score = -raw_score if cftc_info["invert"] else raw_score
                 
         elif name in INDEX_ETF_MAPPING:
+            # Set the label immediately regardless of whether data returns None
+            smart_money_label = "Smart Money (Put/Call)"
             pcr_score = get_put_call_ratio(INDEX_ETF_MAPPING[name])
             if pcr_score is not None:
                 smart_money_score = pcr_score
-                smart_money_label = "Smart Money (Put/Call)"
 
         # --- PART C: THE MASTER SENTIMENT SCORE ---
         retail_score = get_ig_retail_sentiment(name, get_ig_session())
