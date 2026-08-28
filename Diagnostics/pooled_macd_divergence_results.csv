@@ -1,0 +1,6 @@
+window_bars,bear_rate,bear_random,bear_n,bear_p,bear_sig,bull_rate,bull_random,bull_n,bull_p,bull_sig
+12,12.4,7.8,372,0.0508,False,12.7,5.3,284,0.003,True
+24,20.4,11.8,372,0.0019,True,22.5,11.3,284,0.0005,True
+48,36.6,26.1,372,0.0026,True,36.6,22.2,284,0.0002,True
+72,47.6,35.5,372,0.001,True,45.4,30.6,284,0.0004,True
+96,54.8,47.8,372,0.0666,False,52.5,44.0,284,0.0533,False

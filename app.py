@@ -1,19 +1,39 @@
 import streamlit as st
 import pandas as pd
-import random
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import pandas_datareader.data as web
 import datetime
 import pysentiment2 as ps
 from trading_ig import IGService
+import json
+import os
+import time
 
-# 1. PAGE SETUP
+# ============================================================
+# 1. PAGE SETUP & PERSISTENCE
+# ============================================================
 st.set_page_config(page_title="Quant Trade Engine", layout="wide")
 
-# 2. THE EXHAUSTIVE VANTAGE MARKETS DICTIONARY
+WATCHLIST_FILE = "watchlist.json"
+
+def load_watchlist():
+    if os.path.exists(WATCHLIST_FILE):
+        try:
+            with open(WATCHLIST_FILE, "r") as f: return json.load(f)
+        except Exception: return {}
+    return {}
+
+def save_watchlist(data):
+    with open(WATCHLIST_FILE, "w") as f: json.dump(data, f, indent=4)
+
+if "custom_watchlist" not in st.session_state:
+    st.session_state.custom_watchlist = load_watchlist()
+
+# ============================================================
+# 2. DICTIONARIES & MAPPINGS
+# ============================================================
 INSTRUMENTS = {
     "Forex (Majors)": {
         "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X", 
@@ -27,19 +47,11 @@ INSTRUMENTS = {
         "GBP/CAD": "GBPCAD=X", "GBP/NZD": "GBPNZD=X", "NZD/CAD": "NZDCAD=X", "NZD/CHF": "NZDCHF=X"
     },
     "Global Stock Indices": {
-        "US Dollar Index (DXY)": "DX-Y.NYB",
-        "US 30 (Dow Jones)": "^DJI",
-        "US 500 (S&P 500)": "^GSPC",
-        "US Tech 100 (Nasdaq)": "^NDX",
-        "US 2000 (Russell 2000)": "^RUT",
-        "VIX (Volatility Index)": "^VIX",
-        "UK 100 (FTSE)": "^FTSE",
-        "Germany 40 (DAX)": "^GDAXI",
-        "France 40 (CAC)": "^FCHI",
-        "Europe 50 (Euro Stoxx)": "^STOXX50E",
-        "Japan 225 (Nikkei)": "^N225",
-        "Hong Kong 50 (Hang Seng)": "^HSI",
-        "Australia 200 (ASX)": "^AXJO"
+        "US Dollar Index (DXY)": "DX-Y.NYB", "US 30 (Dow Jones)": "^DJI", "US 500 (S&P 500)": "^GSPC",
+        "US Tech 100 (Nasdaq)": "^NDX", "US 2000 (Russell 2000)": "^RUT", "VIX (Volatility Index)": "^VIX",
+        "UK 100 (FTSE)": "^FTSE", "Germany 40 (DAX)": "^GDAXI", "France 40 (CAC)": "^FCHI",
+        "Europe 50 (Euro Stoxx)": "^STOXX50E", "Japan 225 (Nikkei)": "^N225",
+        "Hong Kong 50 (Hang Seng)": "^HSI", "Australia 200 (ASX)": "^AXJO"
     },
     "Precious Metals & Commodities": {
         "Gold": "GC=F", "Silver": "SI=F", "Copper": "HG=F", "Platinum": "PL=F", 
@@ -47,34 +59,19 @@ INSTRUMENTS = {
         "Brent Crude": "BZ=F", "Natural Gas": "NG=F"
     },
     "Treasury Bonds & Notes": {
-        "US 10-Year T-Note (Yield)": "^TNX",
-        "US 10-Year T-Note (Futures)": "ZN=F",
-        "US 30-Year T-Bond (Yield)": "^TYX",
-        "US 30-Year T-Bond (Futures)": "ZB=F",
-        "US 5-Year T-Note (Yield)": "^FVX",
-        "US 5-Year T-Note (Futures)": "ZF=F",
-        "US 2-Year T-Note (Futures)": "ZT=F"
+        "US 10-Year T-Note (Yield)": "^TNX", "US 10-Year T-Note (Futures)": "ZN=F",
+        "US 30-Year T-Bond (Yield)": "^TYX", "US 30-Year T-Bond (Futures)": "ZB=F",
+        "US 5-Year T-Note (Yield)": "^FVX", "US 5-Year T-Note (Futures)": "ZF=F", "US 2-Year T-Note (Futures)": "ZT=F"
     },
     "Crypto": {
-        "BTC/USD (Bitcoin)": "BTC-USD",
-        "ETH/USD (Ethereum)": "ETH-USD",
-        "SOL/USD (Solana)": "SOL-USD",
-        "XRP/USD (Ripple)": "XRP-USD",
-        "ADA/USD (Cardano)": "ADA-USD",
-        "DOGE/USD (Dogecoin)": "DOGE-USD",
-        "LINK/USD (Chainlink)": "LINK-USD",
-        "DOT/USD (Polkadot)": "DOT-USD",
-        "LTC/USD (Litecoin)": "LTC-USD",
-        "BCH/USD (Bitcoin Cash)": "BCH-USD",
-        "AVAX/USD (Avalanche)": "AVAX-USD",
-        "MATIC/USD (Polygon)": "MATIC-USD",
-        "UNI/USD (Uniswap)": "UNI7083-USD", 
-        "XLM/USD (Stellar)": "XLM-USD",
-        "ATOM/USD (Cosmos)": "ATOM-USD"
+        "BTC/USD (Bitcoin)": "BTC-USD", "ETH/USD (Ethereum)": "ETH-USD", "SOL/USD (Solana)": "SOL-USD",
+        "XRP/USD (Ripple)": "XRP-USD", "ADA/USD (Cardano)": "ADA-USD", "DOGE/USD (Dogecoin)": "DOGE-USD",
+        "LINK/USD (Chainlink)": "LINK-USD", "DOT/USD (Polkadot)": "DOT-USD", "LTC/USD (Litecoin)": "LTC-USD",
+        "BCH/USD (Bitcoin Cash)": "BCH-USD", "AVAX/USD (Avalanche)": "AVAX-USD", "MATIC/USD (Polygon)": "MATIC-USD",
+        "UNI/USD (Uniswap)": "UNI7083-USD", "XLM/USD (Stellar)": "XLM-USD", "ATOM/USD (Cosmos)": "ATOM-USD"
     }
 }
 
-# THE GLOBAL MACRO FRED DICTIONARY
 FRED_MACRO_TICKERS = {
     "USD": {"Rate": "FEDFUNDS", "CPI": "CPIAUCSL"},
     "EUR": {"Rate": "IR3TIB01EZM156N", "CPI": "CP0000EZ19M086NEST"},
@@ -86,8 +83,17 @@ FRED_MACRO_TICKERS = {
     "CHF": {"Rate": "IR3TIB01CHM156N", "CPI": "CHECPIALLMINMEI"}
 }
 
+INDEX_TO_CURRENCY = {
+    "US Dollar Index (DXY)": "USD", "US 30 (Dow Jones)": "USD", "US 500 (S&P 500)": "USD",
+    "US Tech 100 (Nasdaq)": "USD", "US 2000 (Russell 2000)": "USD", "VIX (Volatility Index)": "USD",
+    "UK 100 (FTSE)": "GBP", "Germany 40 (DAX)": "EUR", "France 40 (CAC)": "EUR",
+    "Europe 50 (Euro Stoxx)": "EUR", "Japan 225 (Nikkei)": "JPY",
+    "Hong Kong 50 (Hang Seng)": "USD", "Australia 200 (ASX)": "AUD"
+}
 
-# 3. THE TECHNICAL ANALYSIS ENGINE
+# ============================================================
+# 3. TECHNICAL ANALYSIS ENGINE
+# ============================================================
 @st.cache_data(ttl=3600)
 def calculate_daily_trend_score(ticker_symbol):
     try:
@@ -96,36 +102,23 @@ def calculate_daily_trend_score(ticker_symbol):
         if df.empty or len(df) < 200:
             return 0, {"⚠️ STATUS": "Insufficient History"} 
             
-        # --- NATIVE PANDAS TECHNICAL INDICATORS ---
-        # 1. Moving Averages
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
         df['SMA_200'] = df['Close'].rolling(window=200).mean()
         
-        # 2. RSI (14-Period Wilder's Smoothing)
         delta = df['Close'].diff()
         gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-        rs = gain / loss
-        df['RSI_14'] = 100 - (100 / (1 + rs))
+        df['RSI_14'] = 100 - (100 / (1 + (gain / loss)))
         
-        # 3. MACD (12, 26, 9)
         ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
         ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
         df['MACD_12_26_9'] = ema_12 - ema_26
         df['MACDs_12_26_9'] = df['MACD_12_26_9'].ewm(span=9, adjust=False).mean()
         df['MACDh_12_26_9'] = df['MACD_12_26_9'] - df['MACDs_12_26_9']
-        # ------------------------------------------
         
         current = df.iloc[-1]
-        close = current['Close']
-        ema_20 = current['EMA_20']
-        sma_50 = current['SMA_50']
-        sma_200 = current['SMA_200']
-        rsi_14 = current['RSI_14']
-        macd_line = current['MACD_12_26_9']
-        macd_signal = current['MACDs_12_26_9']
-        macd_hist = current['MACDh_12_26_9']
+        close, ema_20, sma_50, sma_200, rsi_14, macd_hist = current['Close'], current['EMA_20'], current['SMA_50'], current['SMA_200'], current['RSI_14'], current['MACDh_12_26_9']
 
         score = 0
         score += 10 if close > ema_20 else -10
@@ -140,42 +133,27 @@ def calculate_daily_trend_score(ticker_symbol):
         elif rsi_14 > 50: score += 15 
         else: score -= 15 
             
-        # MACD (25 Points) - Consolidating the duplicate checks
         if macd_hist > 0: score += 25
         else: score -= 25
             
         details = {
-            "Close Price": round(close, 4),
-            "EMA 20": round(ema_20, 4),
-            "SMA 50": round(sma_50, 4),
-            "SMA 200": round(sma_200, 4),
-            "RSI (14)": round(rsi_14, 2),
-            "MACD Hist": round(macd_hist, 4)
+            "Close Price": round(close, 4), "EMA 20": round(ema_20, 4), "SMA 50": round(sma_50, 4),
+            "SMA 200": round(sma_200, 4), "RSI (14)": round(rsi_14, 2), "MACD Hist": round(macd_hist, 4)
         }
         return max(-100, min(100, score)), details
     except Exception:
         return 0, {"⚠️ STATUS": "Technical API Failure"}
     
-
-# --- 4H DATA + INDICATORS (Patched for yfinance limitations) ---
-@st.cache_data(ttl=1800)  # 30 min cache
+@st.cache_data(ttl=1800)
 def get_4h_indicators(ticker_symbol):
     try:
         asset = yf.Ticker(ticker_symbol)
-        # FIX: yfinance only supports up to 1h sub-daily. Fetch 1h, then resample to 4h.
         df_1h = asset.history(period="60d", interval="1h") 
-        if df_1h.empty:
-            return None
+        if df_1h.empty: return None
 
-        # Resample 1H bars into true 4H bars
-        df = df_1h.resample('4h').agg({
-            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-        }).dropna()
+        df = df_1h.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        if len(df) < 60: return None
 
-        if len(df) < 60:
-            return None
-
-        # Calculate Indicators
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
 
@@ -184,130 +162,80 @@ def get_4h_indicators(ticker_symbol):
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
         df['RSI_14'] = 100 - (100 / (1 + gain / loss))
 
-        ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
-        ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
-        macd = ema_12 - ema_26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        df['MACD_hist'] = macd - signal
+        macd = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD_hist'] = macd - macd.ewm(span=9, adjust=False).mean()
 
-        # ATR for retracement-depth normalization
-        high_low = df['High'] - df['Low']
-        high_close = (df['High'] - df['Close'].shift()).abs()
-        low_close = (df['Low'] - df['Close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        tr = pd.concat([df['High'] - df['Low'], (df['High'] - df['Close'].shift()).abs(), (df['Low'] - df['Close'].shift()).abs()], axis=1).max(axis=1)
         df['ATR_14'] = tr.rolling(14).mean()
 
         return df.dropna()
     except Exception:
         return None
 
-
-# --- 4H MOMENTUM SCORE ---
 def calculate_4h_momentum_score(df4h, daily_direction):
-    if df4h is None or len(df4h) < 5 or daily_direction == 0:
-        return 0
+    if df4h is None or len(df4h) < 5 or daily_direction == 0: return 0
+    c, prev, score = df4h.iloc[-1], df4h.iloc[-2], 0
 
-    c = df4h.iloc[-1]
-    prev = df4h.iloc[-2]
-    score = 0
-
-    if daily_direction > 0:  # only score bullish momentum in a daily uptrend
-        if c['Close'] > c['EMA_20'] and c['EMA_20'] > prev['EMA_20']:
-            score += 30
-        if c['RSI_14'] > 55 and c['RSI_14'] > prev['RSI_14']:
-            score += 30
-        if c['MACD_hist'] > 0 and c['MACD_hist'] > prev['MACD_hist']:
-            score += 40
-    else:  # mirror for daily downtrend
-        if c['Close'] < c['EMA_20'] and c['EMA_20'] < prev['EMA_20']:
-            score += 30
-        if c['RSI_14'] < 45 and c['RSI_14'] < prev['RSI_14']:
-            score += 30
-        if c['MACD_hist'] < 0 and c['MACD_hist'] < prev['MACD_hist']:
-            score += 40
+    if daily_direction > 0:
+        if c['Close'] > c['EMA_20'] and c['EMA_20'] > prev['EMA_20']: score += 30
+        if c['RSI_14'] > 55 and c['RSI_14'] > prev['RSI_14']: score += 30
+        if c['MACD_hist'] > 0 and c['MACD_hist'] > prev['MACD_hist']: score += 40
+    else:
+        if c['Close'] < c['EMA_20'] and c['EMA_20'] < prev['EMA_20']: score += 30
+        if c['RSI_14'] < 45 and c['RSI_14'] < prev['RSI_14']: score += 30
+        if c['MACD_hist'] < 0 and c['MACD_hist'] < prev['MACD_hist']: score += 40
         score = -score
-
     return max(-100, min(100, score))
 
-
-# --- 4H PULLBACK SCORE ---
 def calculate_4h_pullback_score(df4h, daily_direction):
-    if df4h is None or len(df4h) < 5 or daily_direction == 0:
-        return 0
-
-    c = df4h.iloc[-1]
-    prev = df4h.iloc[-2]
-    atr = c['ATR_14']
-    if atr == 0 or pd.isna(atr):
-        return 0
+    if df4h is None or len(df4h) < 5 or daily_direction == 0: return 0
+    c, prev, atr = df4h.iloc[-1], df4h.iloc[-2], df4h.iloc[-1]['ATR_14']
+    if atr == 0 or pd.isna(atr): return 0
 
     dist_from_ema20_atr = (c['Close'] - c['EMA_20']) / atr
     score = 0
 
-    if daily_direction > 0:  # bullish pullback
-        if -1.5 <= dist_from_ema20_atr <= 0.5:  
-            score += 30
-        if 30 <= c['RSI_14'] <= 50:
-            score += 30
-        if c['RSI_14'] > prev['RSI_14']:  # turning back up off the dip
-            score += 20
-        if c['MACD_hist'] > prev['MACD_hist']:  # histogram basing/improving
-            score += 20
-    else:  # bearish pullback
-        if -0.5 <= dist_from_ema20_atr <= 1.5:
-            score += 30
-        if 50 <= c['RSI_14'] <= 70:
-            score += 30
-        if c['RSI_14'] < prev['RSI_14']:
-            score += 20
-        if c['MACD_hist'] < prev['MACD_hist']:
-            score += 20
+    if daily_direction > 0: 
+        if -1.5 <= dist_from_ema20_atr <= 0.5: score += 30
+        if 30 <= c['RSI_14'] <= 50: score += 30
+        if c['RSI_14'] > prev['RSI_14']: score += 20
+        if c['MACD_hist'] > prev['MACD_hist']: score += 20
+    else: 
+        if -0.5 <= dist_from_ema20_atr <= 1.5: score += 30
+        if 50 <= c['RSI_14'] <= 70: score += 30
+        if c['RSI_14'] < prev['RSI_14']: score += 20
+        if c['MACD_hist'] < prev['MACD_hist']: score += 20
         score = -score
-
     return max(-100, min(100, score))
 
-
-# --- MASTER COMBINED TECHNICAL ENGINE ---
 @st.cache_data(ttl=1800)
 def calculate_technical_score(ticker_symbol):
     try:
-        # 1. Get the Daily Macro Trend
         daily_score, daily_details = calculate_daily_trend_score(ticker_symbol)
-        
-        # Determine Daily Bias: +1 (Bullish), -1 (Bearish), 0 (Neutral)
         daily_direction = 1 if daily_score > 0 else (-1 if daily_score < 0 else 0)
 
-        # 2. Process 4-Hour Timeframe
         df4h = get_4h_indicators(ticker_symbol)
         momentum_score = calculate_4h_momentum_score(df4h, daily_direction)
         pullback_score = calculate_4h_pullback_score(df4h, daily_direction)
 
-        # 3. Dynamic Switcher (Pick the strongest signal)
         if abs(momentum_score) >= abs(pullback_score):
-            four_h_score = momentum_score
-            active_mode = "Momentum" if momentum_score != 0 else "Neutral"
+            four_h_score, active_mode = momentum_score, ("Momentum" if momentum_score != 0 else "Neutral")
         else:
-            four_h_score = pullback_score
-            active_mode = "Pullback"
+            four_h_score, active_mode = pullback_score, "Pullback"
 
-        # 4. Blend the Scores (50% Daily Macro / 50% 4-Hour Trigger)
-        final_score = (daily_score * 0.5) + (four_h_score * 0.5)
-
-        # 5. Format Output for Streamlit UI
+        final_score = (daily_score * 0.7) + (four_h_score * 0.3)
         details = {
-            **daily_details,  # Unpacks the existing daily details dictionary
-            "4H Trading Mode": active_mode,
-            "4H Momentum Score": round(momentum_score, 1),
-            "4H Pullback Score": round(pullback_score, 1),
-            "4H Trigger Component": round(four_h_score, 1),
+            **daily_details, 
+            "4H Trading Mode": active_mode, "4H Momentum Score": round(momentum_score, 1),
+            "4H Pullback Score": round(pullback_score, 1), "4H Trigger Component": round(four_h_score, 1),
         }
-
         return max(-100, min(100, final_score)), details
-        
     except Exception as e:
         return 0, {"⚠️ STATUS": f"Technical API Failure: {str(e)}"}
 
-# 4. THE SEASONALITY ENGINE
+# ============================================================
+# 4. SEASONALITY ENGINE
+# ============================================================
 @st.cache_data(ttl=86400)
 def calculate_seasonality_score(ticker_symbol):
     try:
@@ -318,102 +246,50 @@ def calculate_seasonality_score(ticker_symbol):
         current_month = datetime.datetime.now().month
         df['Returns'] = df['Close'].pct_change()
         monthly_data = df[df.index.month == current_month]['Returns'].dropna()
-        
         if monthly_data.empty: return 0, {"⚠️ STATUS": "No Monthly Data"}
             
         avg_return = monthly_data.mean() * 100
-        score = (avg_return / 2.0) * 100 # Scoring based on a 2% monthly move threshold
-        
-        # --- NEW DETAILS DICTIONARY ---
-        details = {"Avg Monthly Return": round(avg_return, 2)}
-        return max(-100, min(100, score)), details
-        
+        score = (avg_return / 2.0) * 100
+        return max(-100, min(100, score)), {"Avg Monthly Return": round(avg_return, 2)}
     except Exception:
         return 0, {"⚠️ STATUS": "Seasonality API Failure"}
 
-
-        # 5. THE SENTIMENT ENGINE & COT MAPPING
+# ============================================================
+# 5. SENTIMENT & COT ENGINE
+# ============================================================
 COT_MAPPING = {
-    "Gold": {"code": "088691", "invert": False},
-    "Silver": {"code": "084691", "invert": False},
+    "Gold": {"code": "088691", "invert": False}, "Silver": {"code": "084691", "invert": False},
     "Crude Oil (WTI)": {"code": "067651", "invert": False}
 }
-
 CURRENCY_COT_MAPPING = {
-    "EUR": "099741", "GBP": "096742", "JPY": "097741",
-    "CHF": "092741", "CAD": "090741", "AUD": "232741", "NZD": "112741"
+    "EUR": "099741", "GBP": "096742", "JPY": "097741", "CHF": "092741", 
+    "CAD": "090741", "AUD": "232741", "NZD": "112741"
 }
-
 INDEX_ETF_MAPPING = {
-    "US 500 (S&P 500)": "SPY",
-    "US Tech 100 (Nasdaq)": "QQQ",
-    "US 30 (Dow Jones)": "DIA",
-    "US 2000 (Russell 2000)": "IWM",
-    "UK 100 (FTSE)": "EWU",
-    "Germany 40 (DAX)": "EWG",
-    "France 40 (CAC)": "EWQ",
-    "Europe 50 (Euro Stoxx)": "FEZ",
-    "Japan 225 (Nikkei)": "EWJ",
-    "Hong Kong 50 (Hang Seng)": "EWH",
-    "Australia 200 (ASX)": "EWA"
+    "US 500 (S&P 500)": "SPY", "US Tech 100 (Nasdaq)": "QQQ", "US 30 (Dow Jones)": "DIA",
+    "US 2000 (Russell 2000)": "IWM", "UK 100 (FTSE)": "EWU", "Germany 40 (DAX)": "EWG",
+    "France 40 (CAC)": "EWQ", "Europe 50 (Euro Stoxx)": "FEZ", "Japan 225 (Nikkei)": "EWJ",
+    "Hong Kong 50 (Hang Seng)": "EWH", "Australia 200 (ASX)": "EWA"
 }
-
-# --- THE IG SENTIMENT DICTIONARY
 IG_SENTIMENT_MAPPING = {
-    # Forex (Majors)
-    "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY",
-    "USD/CHF": "USDCHF", "USD/CAD": "USDCAD", "AUD/USD": "AUDUSD", "NZD/USD": "NZDUSD",
-    
-    # Forex (Minors & Crosses)
-    "EUR/GBP": "EURGBP", "EUR/JPY": "EURJPY", "GBP/JPY": "GBPJPY", "EUR/CHF": "EURCHF",
-    "AUD/JPY": "AUDJPY", "EUR/AUD": "EURAUD", "GBP/CHF": "GBPCHF", "CAD/JPY": "CADJPY",
-    "NZD/JPY": "NZDJPY", "AUD/NZD": "AUDNZD", "AUD/CAD": "AUDCAD", "AUD/CHF": "AUDCHF",
-    "CAD/CHF": "CADCHF", "EUR/CAD": "EURCAD", "EUR/NZD": "EURNZD", "GBP/AUD": "GBPAUD",
-    "GBP/CAD": "GBPCAD", "GBP/NZD": "GBPNZD", "NZD/CAD": "NZDCAD", "NZD/CHF": "NZDCHF",
-    
-    # Global Stock Indices
-    "US 30 (Dow Jones)": "WALL",
-    "US 500 (S&P 500)": "US500",
-    "US Tech 100 (Nasdaq)": "USTECH",
-    "US 2000 (Russell 2000)": "R2000",
-    "UK 100 (FTSE)": "FT100",
-    "Germany 40 (DAX)": "DE30",
-    "France 40 (CAC)": "FR40",
-    "Europe 50 (Euro Stoxx)": "EU50",
-    "Japan 225 (Nikkei)": "JP225",
-    "Hong Kong 50 (Hang Seng)": "HS34",
-    "Australia 200 (ASX)": "AU200",
-    
-    # Precious Metals & Commodities (Using Standard CME/NYMEX Tickers)
-    "Gold": "GC", 
-    "Silver": "SI", 
-    "Copper": "HG", 
-    "Platinum": "PL",
-    "Palladium": "PA", 
-    "Zinc": "ZNC",
-    "Crude Oil (WTI)": "CL", 
-    "Brent Crude": "LCO", 
-    "Natural Gas": "NG",
-    
-    # Crypto
-    "BTC/USD (Bitcoin)": "BITCOIN",
-    "ETH/USD (Ethereum)": "ETHER",
-    "XRP/USD (Ripple)": "RIPPLE",
-    "LTC/USD (Litecoin)": "LITECOIN",
-    "BCH/USD (Bitcoin Cash)": "BITCOINCASH",
-    "ADA/USD (Cardano)": "CARDANO",
-    "DOGE/USD (Dogecoin)": "DOGECOIN",
-    "LINK/USD (Chainlink)": "CHAINLINK",
-    "DOT/USD (Polkadot)": "POLKADOT",
-    "SOL/USD (Solana)": "SOLANA",
-    "AVAX/USD (Avalanche)": "AVALANCHE",
-    "MATIC/USD (Polygon)": "POLYGON",
-    "UNI/USD (Uniswap)": "UNISWAP",
-    "XLM/USD (Stellar)": "STELLAR",
-    "ATOM/USD (Cosmos)": "COSMOS"
+    "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY", "USD/CHF": "USDCHF", "USD/CAD": "USDCAD",
+    "AUD/USD": "AUDUSD", "NZD/USD": "NZDUSD", "EUR/GBP": "EURGBP", "EUR/JPY": "EURJPY", "GBP/JPY": "GBPJPY",
+    "EUR/CHF": "EURCHF", "AUD/JPY": "AUDJPY", "EUR/AUD": "EURAUD", "GBP/CHF": "GBPCHF", "CAD/JPY": "CADJPY",
+    "NZD/JPY": "NZDJPY", "AUD/NZD": "AUDNZD", "AUD/CAD": "AUDCAD", "AUD/CHF": "AUDCHF", "CAD/CHF": "CADCHF",
+    "EUR/CAD": "EURCAD", "EUR/NZD": "EURNZD", "GBP/AUD": "GBPAUD", "GBP/CAD": "GBPCAD", "GBP/NZD": "GBPNZD",
+    "NZD/CAD": "NZDCAD", "NZD/CHF": "NZDCHF", "US 30 (Dow Jones)": "WALL", "US 500 (S&P 500)": "US500",
+    "US Tech 100 (Nasdaq)": "USTECH", "US 2000 (Russell 2000)": "R2000", "UK 100 (FTSE)": "FT100",
+    "Germany 40 (DAX)": "DE30", "France 40 (CAC)": "FR40", "Europe 50 (Euro Stoxx)": "EU50",
+    "Japan 225 (Nikkei)": "JP225", "Hong Kong 50 (Hang Seng)": "HS34", "Australia 200 (ASX)": "AU200",
+    "Gold": "GC", "Silver": "SI", "Copper": "HG", "Platinum": "PL", "Palladium": "PA", "Zinc": "ZNC",
+    "Crude Oil (WTI)": "CL", "Brent Crude": "LCO", "Natural Gas": "NG", "BTC/USD (Bitcoin)": "BITCOIN",
+    "ETH/USD (Ethereum)": "ETHER", "XRP/USD (Ripple)": "RIPPLE", "LTC/USD (Litecoin)": "LITECOIN",
+    "BCH/USD (Bitcoin Cash)": "BITCOINCASH", "ADA/USD (Cardano)": "CARDANO", "DOGE/USD (Dogecoin)": "DOGECOIN",
+    "LINK/USD (Chainlink)": "CHAINLINK", "DOT/USD (Polkadot)": "POLKADOT", "SOL/USD (Solana)": "SOLANA",
+    "AVAX/USD (Avalanche)": "AVALANCHE", "MATIC/USD (Polygon)": "POLYGON", "UNI/USD (Uniswap)": "UNISWAP",
+    "XLM/USD (Stellar)": "STELLAR", "ATOM/USD (Cosmos)": "COSMOS"
 }
 
-# HELPER FUNCTION: Fetches the raw CFTC score for a single asset/currency
 def get_cftc_score(cftc_code):
     try:
         url = f"https://publicreporting.cftc.gov/resource/6dca-aqww.json?cftc_contract_market_code={cftc_code}&$order=report_date_as_yyyy_mm_dd DESC&$limit=2"
@@ -421,253 +297,140 @@ def get_cftc_score(cftc_code):
         if resp.status_code == 200:
             data = resp.json()
             if len(data) == 2:
-                # Current Week
-                longs_curr = float(data[0].get('noncomm_positions_long_all', 0))
-                shorts_curr = float(data[0].get('noncomm_positions_short_all', 0))
+                longs_curr, shorts_curr = float(data[0].get('noncomm_positions_long_all', 0)), float(data[0].get('noncomm_positions_short_all', 0))
                 total_curr = longs_curr + shorts_curr
-                if total_curr == 0:
-                    return None
+                if total_curr == 0: return None
                 
                 net_curr = longs_curr - shorts_curr
-                
-                # Previous Week
-                longs_prev = float(data[1].get('noncomm_positions_long_all', 0))
-                shorts_prev = float(data[1].get('noncomm_positions_short_all', 0))
+                longs_prev, shorts_prev = float(data[1].get('noncomm_positions_long_all', 0)), float(data[1].get('noncomm_positions_short_all', 0))
                 net_prev = longs_prev - shorts_prev
                 
-                # 1. Continuous Absolute Score (-50 to +50)
-                net_ratio_curr = net_curr / total_curr
-                abs_score = net_ratio_curr * 50.0
-                
-                # 2. Continuous Momentum Score (-50 to +50)
-                delta_net_ratio = (net_curr - net_prev) / total_curr
-                momentum_score = max(-50.0, min(50.0, delta_net_ratio * 250.0))
-                
-                # Combined Score (-100 to +100)
-                final_score = abs_score + momentum_score
-                return max(-100.0, min(100.0, final_score))
-                
-    except Exception:
-        pass
+                abs_score = (net_curr / total_curr) * 50.0
+                momentum_score = max(-50.0, min(50.0, ((net_curr - net_prev) / total_curr) * 250.0))
+                return max(-100.0, min(100.0, abs_score + momentum_score))
+    except Exception: pass
     return None
 
-# --- ANTI-BLOCKING MEASURE: Create a spoofed browser session ---
 @st.cache_resource
 def get_yf_session():
-    import requests
     session = requests.Session()
-    # Tell Yahoo we are a standard Windows Chrome Browser, not a Python bot
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     })
     return session
 
-# HELPER FUNCTION: Fetches Put/Call ratio for US & Global Indices via ETF proxies
 def get_put_call_ratio(etf_ticker, min_threshold=30):
     try:
-        import pandas as pd
         session = get_yf_session()
         asset = yf.Ticker(etf_ticker, session=session)
-        
         expirations = asset.options
-        if not expirations:
-            print(f"[{etf_ticker}] API returned no options expirations.")
-            return None
+        if not expirations: return None
             
         neutral_baseline = 0.85
-        total_oi_put, total_oi_call = 0.0, 0.0
-        total_vol_put, total_vol_call = 0.0, 0.0
+        total_oi_put, total_oi_call, total_vol_put, total_vol_call = 0.0, 0.0, 0.0, 0.0
         
-        # Scan up to the front 3 expirations to capture monthly institutional liquidity
         for exp in expirations[:3]:
             try:
                 chain = asset.option_chain(exp)
-                total_oi_put += chain.puts.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
-                total_oi_call += chain.calls.get('openInterest', pd.Series(dtype=float)).fillna(0).sum()
-                total_vol_put += chain.puts.get('volume', pd.Series(dtype=float)).fillna(0).sum()
-                total_vol_call += chain.calls.get('volume', pd.Series(dtype=float)).fillna(0).sum()
-            except Exception:
-                continue
+                if 'openInterest' in chain.puts.columns: total_oi_put += chain.puts['openInterest'].fillna(0).sum()
+                if 'openInterest' in chain.calls.columns: total_oi_call += chain.calls['openInterest'].fillna(0).sum()
+                if 'volume' in chain.puts.columns: total_vol_put += chain.puts['volume'].fillna(0).sum()
+                if 'volume' in chain.calls.columns: total_vol_call += chain.calls['volume'].fillna(0).sum()
+            except Exception: continue
 
-        # 1. Structural Open Interest Score
         score_oi = None
         total_oi = total_oi_put + total_oi_call
         if total_oi_call > 0 and total_oi >= min_threshold:
-            pcr_oi = total_oi_put / total_oi_call
-            dev_oi = pcr_oi - neutral_baseline
-            score_oi = max(-100.0, min(100.0, dev_oi * 200.0))
+            score_oi = max(-100.0, min(100.0, ((total_oi_put / total_oi_call) - neutral_baseline) * 200.0))
 
-        # 2. Active Intraday Volume Score
         score_vol = None
         total_vol = total_vol_put + total_vol_call
         if total_vol_call > 0 and total_vol >= min_threshold:
-            pcr_vol = total_vol_put / total_vol_call
-            dev_vol = pcr_vol - neutral_baseline
-            score_vol = max(-100.0, min(100.0, dev_vol * 200.0))
+            score_vol = max(-100.0, min(100.0, ((total_vol_put / total_vol_call) - neutral_baseline) * 200.0))
 
-        # 3. Dynamic Composite Blend
-        if score_oi is not None and score_vol is not None:
-            final_score = (score_oi * 0.50) + (score_vol * 0.50)
-        elif score_oi is not None:
-            final_score = score_oi
-        elif score_vol is not None:
-            final_score = score_vol
-        else:
-            print(f"[{etf_ticker}] Combined Liquidity below threshold: OI={total_oi}, Vol={total_vol}")
-            return None
-
-        return max(-100.0, min(100.0, final_score))
-        
-    except Exception as e:
-        print(f"[{etf_ticker}] FATAL PCR ERROR: {str(e)}")
+        if score_oi is not None and score_vol is not None: return (score_oi * 0.50) + (score_vol * 0.50)
+        elif score_oi is not None: return score_oi
+        elif score_vol is not None: return score_vol
+        return None
+    except Exception:
         return None
     
-# --- create ONE session, reused, but forced to re-authenticate every 12 hours ---
-@st.cache_resource(ttl=43200) # 43200 seconds = 12 hours
+@st.cache_resource(ttl=43200)
 def get_ig_session():
     try:
         ig_service = IGService(
-            st.secrets["ig_markets"]["username"],
-            st.secrets["ig_markets"]["password"],
-            st.secrets["ig_markets"]["api_key"],
-            st.secrets["ig_markets"]["acc_type"]
+            st.secrets["ig_markets"]["username"], st.secrets["ig_markets"]["password"],
+            st.secrets["ig_markets"]["api_key"], st.secrets["ig_markets"]["acc_type"]
         )
         ig_service.create_session()
         return ig_service
-    except Exception as e:
-        print(f"CRITICAL: Failed to create IG Session: {str(e)}")
-        return None
+    except Exception: return None
 
 @st.cache_data(ttl=3600)
 def get_ig_retail_sentiment(instrument_name, _ig_service):
     try:
-        # If the session failed to build, abort early
-        if _ig_service is None:
-            return None
-            
+        if _ig_service is None: return None
         market_id = IG_SENTIMENT_MAPPING.get(instrument_name)
-        if not market_id:
-            return None
+        if not market_id: return None
 
         sentiment = _ig_service.fetch_client_sentiment_by_instrument(market_id)
+        long_pct, short_pct = float(sentiment.get('longPositionPercentage', 0)), float(sentiment.get('shortPositionPercentage', 0))
 
-        long_pct = float(sentiment.get('longPositionPercentage', 0))
-        short_pct = float(sentiment.get('shortPositionPercentage', 0))
-
-        if long_pct == 0 and short_pct == 0:
-            return None
-
-        net_retail = long_pct - short_pct
-        return -net_retail  # contrarian scoring
-
-    except Exception as e:
-        # Unmask the error! Print it directly to the terminal.
-        print(f"[{instrument_name}] IG RETAIL ERROR: {str(e)}")
-        return None
+        if long_pct == 0 and short_pct == 0: return None
+        return -(long_pct - short_pct) 
+    except Exception: return None
             
-
 @st.cache_data(ttl=3600)
 def calculate_sentiment_score(ticker_symbol, name):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        
-        # --- PART A: LOUGHRAN-MCDONALD FINANCIAL NEWS SENTIMENT ---
         news_score = None
         try:
-            # Clean search query: strip parentheses to prevent query pollution
             clean_name = name.split("(")[0].strip()
-            search_query = f"{clean_name} market news".replace(" ", "+")
-            rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
-            
-            rss_resp = requests.get(rss_url, headers=headers, timeout=5)
-            soup = BeautifulSoup(rss_resp.content, features="xml")
+            rss_url = f"https://news.google.com/rss/search?q={clean_name.replace(' ', '+')}+market+news&hl=en-US&gl=US&ceid=US:en"
+            soup = BeautifulSoup(requests.get(rss_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).content, features="xml")
             headlines = soup.find_all("title")
             
             lm = ps.LM()
-            total_polarity = 0
-            count = 0
-            matched_headlines_count = 0
-            seen_headlines = set() # Deduplication filter
+            total_polarity, count, matched_count, seen_headlines = 0, 0, 0, set()
             
             for headline in headlines[1:16]:
                 text = headline.text
-                text_lower = text.lower()
+                if text.lower() in seen_headlines: continue
+                seen_headlines.add(text.lower())
                 
-                if text_lower in seen_headlines:
-                    continue
-                seen_headlines.add(text_lower)
-                
-                tokens = lm.tokenize(text)
-                score_dict = lm.get_score(tokens)
-                polarity = score_dict.get('Polarity', 0)
-                
-                if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0:
-                    matched_headlines_count += 1
-                
-                total_polarity += polarity
+                score_dict = lm.get_score(lm.tokenize(text))
+                if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0: matched_count += 1
+                total_polarity += score_dict.get('Polarity', 0)
                 count += 1
                 
             if count > 0:
-                avg_polarity = total_polarity / count
-                
-                # Empirically Calibrated Multiplier (225x scaling)
-                scaled_score = avg_polarity * 225.0
-                
-                # Density Safety Check: Scale down if under 15% of headlines had LM matches
-                density_ratio = matched_headlines_count / count
-                if density_ratio < 0.15:
-                    scaled_score *= (density_ratio / 0.15)
-                
+                scaled_score = (total_polarity / count) * 225.0
+                density_ratio = matched_count / count
+                if density_ratio < 0.15: scaled_score *= (density_ratio / 0.15)
                 news_score = max(-100, min(100, scaled_score))
-                
-        except Exception:
-            pass
+        except Exception: pass
 
-        # --- PART B: INSTITUTIONAL SMART MONEY (COT & PCR) ---
-        smart_money_score = None
-        smart_money_label = "Smart Money (COT)"
-        
+        smart_money_score, smart_money_label = None, "Smart Money (COT)"
         if "/" in name:
             base, quote = name.split("/")
-            base_code = CURRENCY_COT_MAPPING.get(base)
-            quote_code = CURRENCY_COT_MAPPING.get(quote)
+            b_code, q_code = CURRENCY_COT_MAPPING.get(base), CURRENCY_COT_MAPPING.get(quote)
+            b_score, q_score = get_cftc_score(b_code) if b_code else None, get_cftc_score(q_code) if q_code else None
             
-            base_score = get_cftc_score(base_code) if base_code else None
-            quote_score = get_cftc_score(quote_code) if quote_code else None
-            
-            if quote == "USD" and base_score is not None:
-                smart_money_score = base_score
-            elif base == "USD" and quote_score is not None:
-                smart_money_score = -quote_score 
-            elif base_score is not None and quote_score is not None:
-                raw_cross_score = base_score - quote_score
-                smart_money_score = raw_cross_score / 2 
-                
+            if quote == "USD" and b_score is not None: smart_money_score = b_score
+            elif base == "USD" and q_score is not None: smart_money_score = -q_score 
+            elif b_score is not None and q_score is not None: smart_money_score = (b_score - q_score) / 2 
         elif name in COT_MAPPING:
             cftc_info = COT_MAPPING[name]
             raw_score = get_cftc_score(cftc_info["code"])
-            if raw_score is not None:
-                smart_money_score = -raw_score if cftc_info["invert"] else raw_score
-                
+            if raw_score is not None: smart_money_score = -raw_score if cftc_info["invert"] else raw_score
         elif name in INDEX_ETF_MAPPING:
-            # Set the label immediately regardless of whether data returns None
             smart_money_label = "Smart Money (Put/Call)"
             pcr_score = get_put_call_ratio(INDEX_ETF_MAPPING[name])
-            if pcr_score is not None:
-                smart_money_score = pcr_score
+            if pcr_score is not None: smart_money_score = pcr_score
 
-        # --- PART C: THE MASTER SENTIMENT SCORE ---
         retail_score = get_ig_retail_sentiment(name, get_ig_session())
-        
-        available_scores = []
-        if news_score is not None: available_scores.append(news_score)
-        if smart_money_score is not None: available_scores.append(smart_money_score)
-        if retail_score is not None: available_scores.append(retail_score)
-        
-        if len(available_scores) > 0:
-            final_score = sum(available_scores) / len(available_scores)
-        else:
-            final_score = 0 
+        available_scores = [s for s in (news_score, smart_money_score, retail_score) if s is not None]
+        final_score = sum(available_scores) / len(available_scores) if available_scores else 0 
 
         details = {
             "News (Loughran-McDonald)": round(news_score, 2) if news_score is not None else "No Data",
@@ -675,373 +438,276 @@ def calculate_sentiment_score(ticker_symbol, name):
             "Retail Sentiment (IG Contrarian)": round(retail_score, 2) if retail_score is not None else "No Data"
         }
         return max(-100, min(100, final_score)), details
-
     except Exception:
         return 0, {"⚠️ STATUS": "Sentiment API Failure"}
-    
-    # 6. THE FUNDAMENTALS ENGINE (MACRO PROXIES + US ANCHOR + GLOBAL EXCHANGES)
 
-# HELPER: Fetches Real Global Economic Data from the Federal Reserve (FRED)
-@st.cache_data(ttl=86400) # Cache for 24 hours
-def get_global_macro_data():
+# ============================================================
+# 6. FUNDAMENTALS ENGINE (MACRO TRIAD HYBRID)
+# ============================================================
+FF_DB_FILE = "ff_history.json"
+COOLDOWN_SECONDS = 900
+
+@st.cache_data(ttl=3600)
+def get_structural_macro():
+    scores = {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}
     try:
         end = datetime.datetime.now()
-        start = end - datetime.timedelta(days=365) 
-        
-        # Flatten dictionary to pull all 16 data streams at once (massive speed boost)
-        all_tickers = []
-        for data in FRED_MACRO_TICKERS.values():
-            all_tickers.extend([data["Rate"], data["CPI"]])
-            
+        start = end - datetime.timedelta(days=730)
+        all_tickers = [val for data in FRED_MACRO_TICKERS.values() for val in data.values()]
         df = web.DataReader(all_tickers, 'fred', start, end)
-        scores = {}
         
-        for currency, data in FRED_MACRO_TICKERS.items():
-            rate_col, cpi_col = data["Rate"], data["CPI"]
+        for currency, indicators in FRED_MACRO_TICKERS.items():
+            score = 0
+            rate_series = df[indicators['Rate']].dropna()
+            if not rate_series.empty: score += (rate_series.iloc[-1] - 2.0) * 5.0
             
-            # Rate Momentum
-            rate_series = df[rate_col].dropna()
-            rate_change = rate_series.iloc[-1] - rate_series.iloc[-2] if len(rate_series) >= 2 else 0
-            
-            # CPI (Inflation) Momentum
-            cpi_series = df[cpi_col].dropna()
-            cpi_change = ((cpi_series.iloc[-1] - cpi_series.iloc[-2]) / cpi_series.iloc[-2]) * 100 if len(cpi_series) >= 2 else 0
-                
-            # True Macro Logic: Rising Rates = Currency Strength (+15), Rising Inflation = Currency Devaluation (-10)
-            scores[currency] = (rate_change * 15) - (cpi_change * 10)
-            
-        return scores
-    except Exception:
-        return {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}
+            cpi_series = df[indicators['CPI']].dropna()
+            if len(cpi_series) >= 14:
+                latest_yoy = ((cpi_series.iloc[-1] - cpi_series.iloc[-13]) / cpi_series.iloc[-13]) * 100
+                prev_yoy = ((cpi_series.iloc[-2] - cpi_series.iloc[-14]) / cpi_series.iloc[-14]) * 100
+                score += (latest_yoy - 2.0) * 5.0 + (latest_yoy - prev_yoy) * 25.0
+            scores[currency] = max(-100, min(100, score))
+    except Exception: pass
+    return scores
 
-   # HELPER: Fetches Live Market Proxy Data (Cached once per hour)
 @st.cache_data(ttl=3600)
-def get_macro_proxy_data():
+def get_proxy_momentum():
+    scores = {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}
     try:
-        import pandas as pd
-        macro_tickers = ["^TNX", "DX-Y.NYB", "^VIX", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GC=F", "CL=F"]
-        
-        # Download the data
-        df = yf.download(macro_tickers, period="2mo", progress=False)['Close']
-        
-        # FIX: Forward-fill first, then backward-fill for any leading NaNs. 
-        # No dropna() so we preserve the row count.
-        df = df.ffill().bfill()
-        
-        return df
-    except Exception:
-        import pandas as pd
-        return pd.DataFrame()
+        df = yf.download(["^TNX", "^VIX", "GC=F", "CL=F"], period="1mo", interval="1d", progress=False)['Close'].ffill().bfill()
+        if len(df) >= 5:
+            roc = ((df.iloc[-1] - df.iloc[-5]) / df.iloc[-5]) * 100
+            v, y, g, o = roc.get('^VIX', 0), roc.get('^TNX', 0), roc.get('GC=F', 0), roc.get('CL=F', 0)
+            
+            scores.update({
+                "USD": (y * 3.0) - (v * 0.5), "JPY": (v * 1.5) - (y * 2.0), "CHF": v * 1.5,
+                "CAD": (o * 2.0) - v, "AUD": (g * 2.0) - (v * 1.5), "NZD": (g * 1.5) - (v * 1.5),
+                "EUR": -(v * 0.5), "GBP": -(v * 0.5)
+            })
+            for k in scores: scores[k] = max(-100, min(100, scores[k]))
+    except Exception: pass
+    return scores
+
+def update_and_get_ff_surprises():
+    history, live_fetch_needed = {}, True
+    if os.path.exists(FF_DB_FILE):
+        try:
+            with open(FF_DB_FILE, 'r') as f: history = json.load(f)
+            if time.time() - os.path.getmtime(FF_DB_FILE) < COOLDOWN_SECONDS: live_fetch_needed = False
+        except: pass
+
+    if live_fetch_needed:
+        try:
+            resp = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+            if resp.status_code == 200:
+                for event in resp.json():
+                    if event.get('impact') == 'High':
+                        eid = f"{str(event.get('date', '')).split('T')[0]}_{event.get('country')}_{event.get('title')}"
+                        if eid not in history or event.get('actual'): history[eid] = event
+                with open(FF_DB_FILE, 'w') as f: json.dump(history, f, indent=4)
+        except Exception: pass
+
+    scores, counts, has_data = {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}, {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}, {}
+    thirty_days_ago = datetime.datetime.now() - datetime.timedelta(days=30)
+    
+    import re
+    def parse_econ_val(val_str):
+        if val_str in [None, "", "None"]: return None
+        v = str(val_str).strip().replace(',', '').lower()
+        if '%' in v:
+            try: return float(v.replace('%', ''))
+            except: return None
+        mult = 1.0
+        if v.endswith('k'): mult, v = 1000.0, v[:-1]
+        elif v.endswith('m'): mult, v = 1000000.0, v[:-1]
+        elif v.endswith('b'): mult, v = 1000000000.0, v[:-1]
+        try: return float(v) * mult
+        except: return None
+
+    for eid, event in history.items():
+        try:
+            if datetime.datetime.strptime(eid.split('_')[0], '%Y-%m-%d') < thirty_days_ago: continue
+            curr = event.get('country')
+            if curr not in scores: continue
+            actual, forecast = parse_econ_val(event.get('actual')), parse_econ_val(event.get('forecast'))
+            if actual is not None and forecast is not None:
+                surprise = ((actual - forecast) / (abs(forecast) + 0.0001)) * 100
+                if any(k in str(event.get('title')).lower() for k in ['unemployment', 'claims', 'claimant']): surprise = -surprise
+                scores[curr] += max(-50, min(50, surprise))
+                counts[curr] += 1
+        except: continue
+            
+    for k in scores:
+        if counts[k] > 0: scores[k], has_data[k] = max(-100, min(100, scores[k] / counts[k])), True
+        else: has_data[k] = False
+    return scores, has_data
+
+def calculate_macro_score(currency, struct_data, proxy_data, surprise_data, has_surprise_flags):
+    active = [struct_data.get(currency, 0), proxy_data.get(currency, 0)]
+    if has_surprise_flags.get(currency, False): active.append(surprise_data.get(currency, 0))
+    return sum(active) / len(active), struct_data.get(currency, 0), proxy_data.get(currency, 0), surprise_data.get(currency, 0)
 
 @st.cache_data(ttl=3600)
 def calculate_fundamental_score(name, asset_class):
     try:
-        # --- 1. TRUE MACRO (Global FRED Economic Baseline) ---
-        global_macro_scores = get_global_macro_data()
-        us_true_macro = max(-100, min(100, global_macro_scores.get("USD", 0)))
-
-        # --- 2. PROXY MOMENTUM (Live Market Data) ---
-        macro_data = get_macro_proxy_data()
+        struct_data, proxy_data, (surprise_data, has_flags) = get_structural_macro(), get_proxy_momentum(), update_and_get_ff_surprises()
         
-        if macro_data.empty or len(macro_data) < 20: 
-            return 0, {"⚠️ STATUS": "Proxy Data Failed"}
-            
-        current = macro_data.iloc[-1]
-        past = macro_data.iloc[-20]
-        
-        is_risk_off = current['^VIX'] >= 30  
-        
-        tnx_trend = max(-30, min(30, ((current['^TNX'] - past['^TNX']) / past['^TNX']) * 100))
-        dxy_trend = max(-20, min(20, ((current['DX-Y.NYB'] - past['DX-Y.NYB']) / past['DX-Y.NYB']) * 100))
-        vix_trend = max(-50, min(50, ((current['^VIX'] - past['^VIX']) / past['^VIX']) * 100))
-        eur_trend = max(-20, min(20, ((current['EURUSD=X'] - past['EURUSD=X']) / past['EURUSD=X']) * 100))
-        gbp_trend = max(-20, min(20, ((current['GBPUSD=X'] - past['GBPUSD=X']) / past['GBPUSD=X']) * 100))
-        jpy_trend = max(-20, min(20, ((current['USDJPY=X'] - past['USDJPY=X']) / past['USDJPY=X']) * 100))
-        gold_trend = max(-20, min(20, ((current['GC=F'] - past['GC=F']) / past['GC=F']) * 100))
-        oil_trend = max(-30, min(30, ((current['CL=F'] - past['CL=F']) / past['CL=F']) * 100))
-        
-        tnx_weight = tnx_trend * 1.5
-        dxy_weight = dxy_trend * 3
-        vix_weight = vix_trend * 1.5
-        eur_weight = eur_trend * 2.0
-        gbp_weight = gbp_trend * 2.0
-        jpy_weight = jpy_trend * 2.0 
-        gold_weight = gold_trend * 2.0
-        oil_weight = oil_trend * 2.0
-        
-        proxy_score = 0
-        true_macro_score = 0
-        
-        # --- DYNAMIC SCORING LOGIC (Decoupled 50/50 Blend) ---
         if "Forex" in asset_class:
-            def get_currency_scores(currency):
-                c_proxy = 0
-                
-                # Fetch actual domestic economic data directly from FRED mapping
-                c_true_macro = max(-100, min(100, global_macro_scores.get(currency, 0)))
-                
-                if currency == "CAD":
-                    c_proxy = (oil_weight * 1.25) - dxy_weight - vix_weight
-                elif currency in ["AUD", "NZD"]:
-                    c_proxy = (gold_weight * 1.25) - dxy_weight - vix_weight
-                elif currency == "EUR":
-                    c_proxy = (eur_weight * 1.5) - dxy_weight - tnx_weight
-                elif currency == "GBP":
-                    c_proxy = (gbp_weight * 1.5) - dxy_weight - tnx_weight
-                elif currency == "JPY":
-                    c_proxy = -(jpy_weight * 1.5) - tnx_weight
-                elif currency == "CHF":
-                    c_proxy = vix_weight - tnx_weight
-                elif currency == "USD":
-                    c_proxy = dxy_weight + tnx_weight
-                    
-                if is_risk_off:
-                    if currency in ["JPY", "CHF", "USD"]: c_proxy += 50 
-                    elif currency in ["AUD", "NZD", "CAD"]: c_proxy -= 50 
-                    elif currency in ["EUR", "GBP"]: c_proxy -= 20 
-                    
-                return c_proxy, c_true_macro
-                
-            if "/" in name:
-                base, quote = name.split("/")
-                base_proxy, base_macro = get_currency_scores(base)
-                quote_proxy, quote_macro = get_currency_scores(quote)
-                
-                proxy_score = (base_proxy - quote_proxy) / 2
-                true_macro_score = (base_macro - quote_macro) / 2
-                
-        elif "Indices" in asset_class:
-            # 1. Fetch the True Macro data for regional economies
-            jpy_macro = max(-100, min(100, global_macro_scores.get("JPY", 0)))
-            gbp_macro = max(-100, min(100, global_macro_scores.get("GBP", 0)))
-            eur_macro = max(-100, min(100, global_macro_scores.get("EUR", 0)))
-            aud_macro = max(-100, min(100, global_macro_scores.get("AUD", 0)))
+            b, q = name.split("/")
+            b_sc, b_st, b_pr, b_su = calculate_macro_score(b, struct_data, proxy_data, surprise_data, has_flags)
+            q_sc, q_st, q_pr, q_su = calculate_macro_score(q, struct_data, proxy_data, surprise_data, has_flags)
+            return max(-100, min(100, b_sc - q_sc)), {
+                f"{b} Struct.": round(b_st, 1), f"{b} Proxy": round(b_pr, 1), f"{b} Surp.": round(b_su, 1) if has_flags.get(b) else "Gathering",
+                f"{q} Struct.": round(q_st, 1), f"{q} Proxy": round(q_pr, 1), f"{q} Surp.": round(q_su, 1) if has_flags.get(q) else "Gathering"
+            }
+        elif "Indices" in asset_class or "Index" in name:
+            c = INDEX_TO_CURRENCY.get(name, "USD")
+            sc, st, pr, su = calculate_macro_score(c, struct_data, proxy_data, surprise_data, has_flags)
+            return max(-100, min(100, -sc)), {
+                "Host Currency": c, "Struct. (Inv)": round(-st, 1), "Proxy (Inv)": round(-pr, 1), "Surp. (Inv)": round(-su, 1) if has_flags.get(c) else "Gathering"
+            }
+        else:
+            sc, st, pr, su = calculate_macro_score("USD", struct_data, proxy_data, surprise_data, has_flags)
+            return max(-100, min(100, -sc)), {
+                "Pricing Base": "USD Anti-Dollar", "Struct. (Inv)": round(-st, 1), "Proxy (Inv)": round(-pr, 1), "Surp. (Inv)": round(-su, 1) if has_flags.get("USD") else "Gathering"
+            }
+    except Exception as e:
+        return 0, {"⚠️ STATUS": f"Macro API Failure: {str(e)}"}
 
-            if name == "Japan 225 (Nikkei)":
-                proxy_score = (jpy_weight * 1.5) - (vix_weight * 1.2)
-                # Blend: 60% Japanese Domestic Economy, 40% US Global Anchor
-                true_macro_score = (jpy_macro * 0.6) + (us_true_macro * 0.4)
-                
-            elif name == "UK 100 (FTSE)":
-                proxy_score = -gbp_weight - (vix_weight * 1.2)
-                # Blend: 40% UK Domestic Economy (heavy global exporter), 60% US Global Anchor
-                true_macro_score = (gbp_macro * 0.4) + (us_true_macro * 0.6)
-                
-            elif name in ["Germany 40 (DAX)", "France 40 (CAC)", "Europe 50 (Euro Stoxx)"]:
-                proxy_score = -eur_weight - (tnx_weight * 0.5) - vix_weight
-                # Blend: 50% Eurozone Domestic Economy, 50% US Global Anchor
-                true_macro_score = (eur_macro * 0.5) + (us_true_macro * 0.5)
-                
-            elif name == "Australia 200 (ASX)":
-                # Proxy: Commodity-heavy, so it gets a slight gold correlation
-                proxy_score = (gold_weight * 0.5) - (tnx_weight * 0.5) - vix_weight
-                # Blend: 70% Australian Domestic Economy, 30% US Global Anchor
-                true_macro_score = (aud_macro * 0.7) + (us_true_macro * 0.3)
-                
-            elif name == "US Tech 100 (Nasdaq)":
-                proxy_score = -(tnx_weight * 2.0) - vix_weight
-                true_macro_score = us_true_macro * 0.8
-                
-            elif name == "US 30 (Dow Jones)":
-                proxy_score = -(tnx_weight * 0.5) - vix_weight
-                true_macro_score = us_true_macro * 1.2
-                
-            elif name == "US 2000 (Russell 2000)":
-                proxy_score = -(tnx_weight * 1.5) - (vix_weight * 1.2)
-                true_macro_score = us_true_macro * 1.5
-                
-            else:
-                proxy_score = -tnx_weight - vix_weight
-                true_macro_score = us_true_macro
-                
-            if is_risk_off: proxy_score -= 60 
-
-        elif "Metals" in asset_class or "Commodities" in asset_class:
-            if name in ["Gold", "Silver", "Platinum"]:
-                proxy_score = -dxy_weight - tnx_weight
-                true_macro_score = -us_true_macro
-                if is_risk_off: proxy_score += 60 
-            else: 
-                proxy_score = -vix_weight
-                true_macro_score = us_true_macro * 0.5 
-                if is_risk_off: proxy_score -= 50 
-
-        elif "Crypto" in asset_class:
-            proxy_score = -dxy_weight - tnx_weight - vix_weight
-            true_macro_score = -us_true_macro
-            if is_risk_off: proxy_score -= 70 
-
-        elif "Treasury" in asset_class:
-            proxy_score = -tnx_weight * 2
-            true_macro_score = -us_true_macro * 0.5 
-            if is_risk_off: proxy_score += 50 
-
-        # --- THE 50/50 BLEND ---
-        capped_proxy = max(-100, min(100, proxy_score))
-        capped_macro = max(-100, min(100, true_macro_score))
-        final_score = (capped_proxy * 0.5) + (capped_macro * 0.5)
-
-        # --- NEW DETAILS DICTIONARY ---
-        details = {
-            "True Macro (FRED) [50%]": round(capped_macro, 2),
-            "Proxy Momentum [50%]": round(capped_proxy, 2),
-            "VIX (Fear) Trend": round(vix_trend, 2),
-            "DXY (USD) Trend": round(dxy_trend, 2)
-        }
-        
-        if "Forex" in asset_class and "/" in name:
-            if 'base_proxy' in locals() and 'base_macro' in locals():
-                details["Base Currency Blend"] = round((base_proxy * 0.5) + (base_macro * 0.5), 2)
-                details["Quote Currency Blend"] = round((quote_proxy * 0.5) + (quote_macro * 0.5), 2)
-
-        return max(-100, min(100, final_score)), details
-
-    except Exception:
-        return 0, {"⚠️ STATUS": "Macro API Failure"}
-
-# 5. SIDEBAR NAVIGATION (Previously Section 4)
+# ============================================================
+# 7. UI NAVIGATION & SETUP ICON HELPER
+# ============================================================
 with st.sidebar:
     st.title("⚙️ Trading Engine")
-    asset_class = st.selectbox("Select Asset Class", list(INSTRUMENTS.keys()))
+    universe_options = ["⭐ Custom Watchlist"] + list(INSTRUMENTS.keys())
+    asset_class = st.selectbox("Select Asset Class", universe_options)
+    if asset_class == "⭐ Custom Watchlist": target_instruments = st.session_state.custom_watchlist
+    else: target_instruments = INSTRUMENTS[asset_class]
+    st.info(f"Target universe contains **{len(target_instruments)}** equities.")
+    
+    st.markdown("---")
+    st.caption("**Setup Icon Legend**")
+    st.caption("🚀 Bullish Momentum &nbsp;&nbsp; 🎯 Bullish Pullback")
+    st.caption("⚡ Bearish Momentum &nbsp;&nbsp; 🎯 Bearish Pullback")
+    st.caption("➖ No Clear 4H Setup")
 
-# 6. MAIN DASHBOARD LAYOUT (Previously Section 5)
 st.title(f"📊 Market Screener: {asset_class}")
 st.divider()
 
-# 7. LIVE DATA SCANNER (The Loop)
+def get_setup_icon(tech_score, tech_details):
+    mode = tech_details.get("4H Trading Mode", "Neutral")
+    if mode == "Pullback": return "🎯"
+    elif tech_score > 0 and mode == "Momentum": return "🚀"
+    elif tech_score < 0 and mode == "Momentum": return "⚡"
+    else: return "➖"
+
+# ============================================================
+# 8. LIVE DATA SCANNER (The Loop)
+# ============================================================
 if "last_scanned_asset" not in st.session_state or st.session_state.last_scanned_asset != asset_class:
     
-    scanned_data = []
-    breakdown_data = {}  
-    total_instruments = len(INSTRUMENTS[asset_class])
-    my_bar = st.progress(0, text="Scanning live markets...")
+    if len(target_instruments) == 0:
+        st.warning("Your Custom Watchlist is empty. Select a standard sector to scan and add some instruments!")
+        st.session_state.scanned_data, st.session_state.breakdown_data = [], {}
+    else:
+        scanned_data, breakdown_data = [], {}
+        my_bar = st.progress(0, text="Scanning live markets...")
 
-    for i, (name, ticker) in enumerate(INSTRUMENTS[asset_class].items()):
-        
-        # --- 1. CALLING ENGINES (Unpacking Tuples) ---
-        tech_score, tech_details = calculate_technical_score(ticker)
-        seas_score, seas_details = calculate_seasonality_score(ticker)
-        sent_score, sent_details = calculate_sentiment_score(ticker, name)
-        fund_score, fund_details = calculate_fundamental_score(name, asset_class)
-        
-        # --- 2. MASTER WEIGHTING MATH ---
-        # Technicals (30%), Fundamentals (30%), Sentiment (30%), Seasonality (10%)
-        master_score = (tech_score * 0.30) + (fund_score * 0.30) + (sent_score * 0.30) + (seas_score * 0.10)
-        
-        # --- 3. BIAS LABELING ---
-        if master_score >= 50: bias_label = "🔥 Very Bullish"
-        elif master_score >= 15: bias_label = "📈 Bullish"
-        elif master_score > -15: bias_label = "⚖️ Neutral"
-        elif master_score > -50: bias_label = "📉 Bearish"
-        else: bias_label = "❄️ Very Bearish"
+        for i, (name, ticker) in enumerate(target_instruments.items()):
+            tech_score, tech_details = calculate_technical_score(ticker)
+            seas_score, seas_details = calculate_seasonality_score(ticker)
+            sent_score, sent_details = calculate_sentiment_score(ticker, name)
+            fund_score, fund_details = calculate_fundamental_score(name, asset_class)
+            
+            master_score = (tech_score * 0.30) + (fund_score * 0.30) + (sent_score * 0.30) + (seas_score * 0.10)
+            
+            if master_score >= 50: bias_label = "🔥 Very Bullish"
+            elif master_score >= 15: bias_label = "📈 Bullish"
+            elif master_score > -15: bias_label = "⚖️ Neutral"
+            elif master_score > -50: bias_label = "📉 Bearish"
+            else: bias_label = "❄️ Very Bearish"
 
-        # --- 4. ADD TO TABLE & SAVE BREAKDOWNS ---
-        scanned_data.append({
-            "Instrument": name,
-            "Master Score": round(master_score, 1),
-            "Bias Status": bias_label,
-            "Technicals (30%)": int(tech_score),
-            "Fundamentals (30%)": int(fund_score),
-            "Sentiment (30%)": int(sent_score),
-            "Seasonality (10%)": int(seas_score)
-        })
-        
-        # Save the dictionary to memory for the UI expanders
-        breakdown_data[name] = {
-            "Technicals": tech_details,
-            "Fundamentals": fund_details,
-            "Sentiment": sent_details,
-            "Seasonality": seas_details
-        }
-        
-        my_bar.progress((i + 1) / total_instruments)
+            scanned_data.append({
+                "Setup": get_setup_icon(tech_score, tech_details),
+                "Instrument": name,
+                "Master Score": round(master_score, 1),
+                "Bias Status": bias_label,
+                "Technicals (30%)": int(tech_score),
+                "Fundamentals (30%)": int(fund_score),
+                "Sentiment (30%)": int(sent_score),
+                "Seasonality (10%)": int(seas_score)
+            })
+            
+            breakdown_data[name] = {
+                "Ticker": ticker, "Technicals": tech_details, "Fundamentals": fund_details,
+                "Sentiment": sent_details, "Seasonality": seas_details
+            }
+            
+            my_bar.progress((i + 1) / len(target_instruments))
+            time.sleep(0.8) 
 
-    my_bar.empty()
+        my_bar.empty()
+        st.session_state.scanned_data, st.session_state.breakdown_data = scanned_data, breakdown_data
     
-    # Save to session state so it survives clicks
-    st.session_state.scanned_data = scanned_data
-    st.session_state.breakdown_data = breakdown_data
     st.session_state.last_scanned_asset = asset_class
 
-# Retrieve from session state for display
-df = pd.DataFrame(st.session_state.scanned_data).sort_values(by="Master Score", ascending=False).reset_index(drop=True)
+# ============================================================
+# 9. DATAFRAME & UI DRILL-DOWN
+# ============================================================
+df = pd.DataFrame(st.session_state.scanned_data)
+if not df.empty: df = df.sort_values(by="Master Score", ascending=False).reset_index(drop=True)
 breakdown_data = st.session_state.breakdown_data
 
-# --- 5. THE COLOR FORMATTING ENGINE ---
 def color_scores(val):
-    """Colors positive numbers green and negative numbers red."""
     if isinstance(val, (int, float)):
-        if val > 0:
-            return 'color: #00FF00; font-weight: bold;' # Bright Green
-        elif val < 0:
-            return 'color: #FF4136; font-weight: bold;' # Deep Red
-        else:
-            return 'color: gray;' # Neutral Zero
+        if val > 0: return 'color: #00FF00; font-weight: bold;' 
+        elif val < 0: return 'color: #FF4136; font-weight: bold;' 
+        else: return 'color: gray;' 
     return ''
 
-# Select which columns to apply the color to
-score_cols = [
-    "Master Score", 
-    "Technicals (30%)", 
-    "Fundamentals (30%)", 
-    "Sentiment (30%)", 
-    "Seasonality (10%)"
-]
+score_cols = ["Master Score", "Technicals (30%)", "Fundamentals (30%)", "Sentiment (30%)", "Seasonality (10%)"]
 
-# Apply the color style AND force the Master Score to 1 decimal place
-styled_df = (
-    df.style
-    .map(color_scores, subset=score_cols) 
-    .format("{:.1f}", subset=["Master Score"]) 
-)
-# Note: If you get a warning about 'applymap' being deprecated, just change it to '.map(color_scores...'
-
-# Display the interactive dataframe with row-selection enabled
-event = st.dataframe(
-    styled_df, 
-    width="stretch",
-    on_select="rerun",
-    selection_mode="single-row"
-)
-
-# --- 6. THE DRILL-DOWN BREAKDOWN UI ---
-selected_rows = event.selection.rows
+if not df.empty:
+    styled_df = df.style.map(color_scores, subset=score_cols).format("{:.1f}", subset=["Master Score"]) 
+    event = st.dataframe(styled_df, width="stretch", on_select="rerun", selection_mode="single-row")
+    selected_rows = event.selection.rows
+else: selected_rows = []
 
 if selected_rows:
-    # Get the index and name of the clicked instrument
-    selected_idx = selected_rows[0]
-    selected_instrument = df.iloc[selected_idx]["Instrument"]
-    
-    # Retrieve the saved breakdown dictionary from memory
+    selected_instrument = df.iloc[selected_rows[0]]["Instrument"]
     details = breakdown_data[selected_instrument]
+    ticker = details["Ticker"]
     
     st.divider()
-    st.subheader(f"🔍 Deep Dive: {selected_instrument}")
+    col_title, col_button = st.columns([3, 1])
+    with col_title: st.subheader(f"🔍 Deep Dive: {selected_instrument}")
+    with col_button:
+        if selected_instrument in st.session_state.custom_watchlist:
+            if st.button("❌ Remove from Watchlist", use_container_width=True):
+                del st.session_state.custom_watchlist[selected_instrument]
+                save_watchlist(st.session_state.custom_watchlist)
+                if asset_class == "⭐ Custom Watchlist": st.session_state.last_scanned_asset = None
+                st.rerun()
+        else:
+            if st.button("⭐ Add to Watchlist", type="primary", use_container_width=True):
+                st.session_state.custom_watchlist[selected_instrument] = ticker
+                save_watchlist(st.session_state.custom_watchlist)
+                st.rerun()
     
     col1, col2 = st.columns(2)
-    
     with col1:
         with st.expander("📈 Technical Analysis", expanded=True):
             t_cols = st.columns(3)
-            idx = 0
-            for key, val in details["Technicals"].items():
-                t_cols[idx % 3].metric(label=key, value=val)
-                idx += 1
+            for idx, (key, val) in enumerate(details["Technicals"].items()): t_cols[idx % 3].metric(label=key, value=val)
                 
         with st.expander("🌍 Fundamental Macro"):
             f_cols = st.columns(2)
-            idx = 0
-            for key, val in details["Fundamentals"].items():
-                f_cols[idx % 2].metric(label=key, value=val)
-                idx += 1
+            for idx, (key, val) in enumerate(details["Fundamentals"].items()): f_cols[idx % 2].metric(label=key, value=val)
                 
     with col2:
         with st.expander("🧠 Sentiment & COT", expanded=True):
             s_cols = st.columns(3)
-            idx = 0
-            for key, val in details["Sentiment"].items():
-                s_cols[idx % 3].metric(label=key, value=val)
-                idx += 1
+            for idx, (key, val) in enumerate(details["Sentiment"].items()): s_cols[idx % 3].metric(label=key, value=val)
                 
         with st.expander("📅 Seasonality"):
             st.metric(label="Average Monthly Return", value=f"{details['Seasonality'].get('Avg Monthly Return', 0)}%")
