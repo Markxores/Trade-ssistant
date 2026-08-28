@@ -311,48 +311,91 @@ def get_cftc_score(cftc_code):
     except Exception: pass
     return None
 
+# ============================================================
+# FIXED: SPOOFED SESSION WITH COOKIE INITIALIZATION
+# ============================================================
 @st.cache_resource
 def get_yf_session():
+    import requests
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
     })
+    try:
+        session.get("https://finance.yahoo.com", timeout=5)
+    except Exception:
+        pass
     return session
 
+# ============================================================
+# FIXED: REGIME-SWITCHING PUT/CALL RATIO FETCHER
+# ============================================================
 def get_put_call_ratio(etf_ticker, min_threshold=30):
     try:
+        import yfinance as yf
         session = get_yf_session()
         asset = yf.Ticker(etf_ticker, session=session)
         expirations = asset.options
-        if not expirations: return None
-            
-        neutral_baseline = 0.85
-        total_oi_put, total_oi_call, total_vol_put, total_vol_call = 0.0, 0.0, 0.0, 0.0
         
-        for exp in expirations[:3]:
+        if not expirations:
+            asset = yf.Ticker(etf_ticker)
+            expirations = asset.options
+            
+        if not expirations:
+            return None
+            
+        total_oi_put, total_oi_call = 0.0, 0.0
+        total_vol_put, total_vol_call = 0.0, 0.0
+        
+        for exp in expirations[:2]:
             try:
                 chain = asset.option_chain(exp)
-                if 'openInterest' in chain.puts.columns: total_oi_put += chain.puts['openInterest'].fillna(0).sum()
-                if 'openInterest' in chain.calls.columns: total_oi_call += chain.calls['openInterest'].fillna(0).sum()
-                if 'volume' in chain.puts.columns: total_vol_put += chain.puts['volume'].fillna(0).sum()
-                if 'volume' in chain.calls.columns: total_vol_call += chain.calls['volume'].fillna(0).sum()
-            except Exception: continue
+                if hasattr(chain, 'puts') and 'openInterest' in chain.puts.columns:
+                    total_oi_put += chain.puts['openInterest'].fillna(0).sum()
+                    total_vol_put += chain.puts['volume'].fillna(0).sum()
+                if hasattr(chain, 'calls') and 'openInterest' in chain.calls.columns:
+                    total_oi_call += chain.calls['openInterest'].fillna(0).sum()
+                    total_vol_call += chain.calls['volume'].fillna(0).sum()
+            except Exception:
+                continue
+
+        # HELPER: Regime-Switching Scoring Logic
+        def score_pcr_regime(pcr):
+            neutral_baseline = 0.85
+            
+            if pcr > 1.30:
+                # Extreme Fear (Over-hedged) -> Contrarian Bullish
+                return min(100.0, (pcr - 1.30) * 150.0)
+            elif pcr < 0.50:
+                # Extreme Greed (Under-hedged) -> Contrarian Bearish
+                return max(-100.0, -(0.50 - pcr) * 300.0)
+            else:
+                # Normal Flow -> Institutional Trend Following
+                return -(pcr - neutral_baseline) * 150.0
 
         score_oi = None
-        total_oi = total_oi_put + total_oi_call
-        if total_oi_call > 0 and total_oi >= min_threshold:
-            score_oi = max(-100.0, min(100.0, ((total_oi_put / total_oi_call) - neutral_baseline) * 200.0))
+        if total_oi_call > 0 and (total_oi_put + total_oi_call) >= min_threshold:
+            pcr_oi = total_oi_put / total_oi_call
+            score_oi = score_pcr_regime(pcr_oi)
 
         score_vol = None
-        total_vol = total_vol_put + total_vol_call
-        if total_vol_call > 0 and total_vol >= min_threshold:
-            score_vol = max(-100.0, min(100.0, ((total_vol_put / total_vol_call) - neutral_baseline) * 200.0))
+        if total_vol_call > 0 and (total_vol_put + total_vol_call) >= min_threshold:
+            pcr_vol = total_vol_put / total_vol_call
+            score_vol = score_pcr_regime(pcr_vol)
 
-        if score_oi is not None and score_vol is not None: return (score_oi * 0.50) + (score_vol * 0.50)
-        elif score_oi is not None: return score_oi
-        elif score_vol is not None: return score_vol
+        if score_oi is not None and score_vol is not None:
+            return (score_oi * 0.50) + (score_vol * 0.50)
+        elif score_oi is not None:
+            return score_oi
+        elif score_vol is not None:
+            return score_vol
+            
         return None
-    except Exception:
+        
+    except Exception as e:
+        print(f"[{etf_ticker}] Options PCR Error: {e}")
         return None
     
 @st.cache_resource(ttl=43200)
