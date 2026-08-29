@@ -2,14 +2,14 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
-from bs4 import BeautifulSoup
 import pandas_datareader.data as web
 import datetime
-import pysentiment2 as ps
 from trading_ig import IGService
 import json
 import os
 import time
+import math
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # ============================================================
 # 1. PAGE SETUP & PERSISTENCE
@@ -109,7 +109,6 @@ def calculate_daily_trend_score(ticker_symbol):
             return 0, {"⚠️ STATUS": "Insufficient History"} 
             
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-        # ... rest of the code remains identical ...
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
         df['SMA_200'] = df['Close'].rolling(window=200).mean()
         
@@ -262,7 +261,7 @@ def calculate_seasonality_score(ticker_symbol):
         return 0, {"⚠️ STATUS": "Seasonality API Failure"}
 
 # ============================================================
-# 5. SENTIMENT & COT ENGINE (4-PILLAR HYBRID WITH 5-DAY PCR)
+# 5. SENTIMENT & COT ENGINE (3-PILLAR HYBRID WITH 5-DAY PCR)
 # ============================================================
 COT_MAPPING = {
     # US Stock Indices & Nikkei
@@ -341,7 +340,6 @@ def get_cftc_score(cftc_code):
 
 @st.cache_resource
 def get_yf_session():
-    import requests
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -356,11 +354,6 @@ def get_yf_session():
 
 def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
     try:
-        import yfinance as yf
-        import json
-        import os
-        import datetime
-        
         PCR_DB_FILE = "pcr_history.json"
         today_str = datetime.datetime.now().strftime('%Y-%m-%d')
         
@@ -390,7 +383,6 @@ def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
             except Exception:
                 continue
 
-        # 1. Calculate Today's Raw PCR
         pcr_oi_today, pcr_vol_today = None, None
         if total_oi_call > 0 and (total_oi_put + total_oi_call) >= min_threshold:
             pcr_oi_today = total_oi_put / total_oi_call
@@ -400,73 +392,53 @@ def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
         if pcr_oi_today is None and pcr_vol_today is None:
             return None
 
-        # 2. Local Database: 5-Day Rolling Storage
         if os.path.exists(PCR_DB_FILE):
             try:
-                with open(PCR_DB_FILE, 'r') as f:
-                    pcr_db = json.load(f)
+                with open(PCR_DB_FILE, 'r') as f: pcr_db = json.load(f)
             except Exception: pcr_db = {}
         else:
             pcr_db = {}
 
-        if etf_ticker not in pcr_db:
-            pcr_db[etf_ticker] = {}
+        if etf_ticker not in pcr_db: pcr_db[etf_ticker] = {}
 
-        # Log today's data (defaults to neutral baseline if one metric is missing)
         pcr_db[etf_ticker][today_str] = {
             "oi": pcr_oi_today if pcr_oi_today else 0.85,
             "vol": pcr_vol_today if pcr_vol_today else 0.85
         }
 
-        # Purge dates older than 5 trading days
         sorted_dates = sorted(pcr_db[etf_ticker].keys())
         if len(sorted_dates) > 5:
-            for d in sorted_dates[:-5]:
-                del pcr_db[etf_ticker][d]
+            for d in sorted_dates[:-5]: del pcr_db[etf_ticker][d]
 
-        # Save to disk
         try:
-            with open(PCR_DB_FILE, 'w') as f:
-                json.dump(pcr_db, f, indent=4)
+            with open(PCR_DB_FILE, 'w') as f: json.dump(pcr_db, f, indent=4)
         except Exception: pass
 
-        # 3. Calculate the Moving Averages
         valid_dates = sorted(pcr_db[etf_ticker].keys())
         avg_pcr_oi = sum(pcr_db[etf_ticker][d]["oi"] for d in valid_dates) / len(valid_dates)
         avg_pcr_vol = sum(pcr_db[etf_ticker][d]["vol"] for d in valid_dates) / len(valid_dates)
 
-        # 4. Dynamic Dead-Band Scoring
         if asset_category == "Commodity":
             lower_bound, upper_bound = 0.55, 0.95
         else:
             lower_bound, upper_bound = 0.70, 1.10
 
         def score_contrarian_band(pcr_sma):
-            if lower_bound <= pcr_sma <= upper_bound:
-                return 0.0
-            elif pcr_sma > upper_bound:
-                # Extreme Fear -> Contrarian Bullish
-                return min(100.0, (pcr_sma - upper_bound) * 150.0)
-            else:
-                # Extreme Greed -> Contrarian Bearish
-                return max(-100.0, -(lower_bound - pcr_sma) * 285.0)
+            if lower_bound <= pcr_sma <= upper_bound: return 0.0
+            elif pcr_sma > upper_bound: return min(100.0, (pcr_sma - upper_bound) * 150.0)
+            else: return max(-100.0, -(lower_bound - pcr_sma) * 285.0)
 
         score_oi = score_contrarian_band(avg_pcr_oi) if pcr_oi_today else None
         score_vol = score_contrarian_band(avg_pcr_vol) if pcr_vol_today else None
 
-        if score_oi is not None and score_vol is not None:
-            return (score_oi * 0.50) + (score_vol * 0.50)
-        elif score_oi is not None:
-            return score_oi
-        elif score_vol is not None:
-            return score_vol
-            
+        if score_oi is not None and score_vol is not None: return (score_oi * 0.50) + (score_vol * 0.50)
+        elif score_oi is not None: return score_oi
+        elif score_vol is not None: return score_vol
         return None
-        
     except Exception as e:
         print(f"[{etf_ticker}] Options PCR Error: {e}")
         return None
-
+    
 @st.cache_resource(ttl=43200)
 def get_ig_session():
     try:
@@ -495,71 +467,109 @@ def get_ig_retail_sentiment(instrument_name, _ig_service):
 @st.cache_data(ttl=3600)
 def calculate_sentiment_score(ticker_symbol, name):
     try:
-        # 1. News Sentiment
+        # =========================================================
+        # 1. NEWS SENTIMENT: YAHOO + VADER (20% Weight)
+        # =========================================================
         news_score = None
         try:
-            clean_name = name.split("(")[0].strip()
-            rss_url = f"https://news.google.com/rss/search?q={clean_name.replace(' ', '+')}+market+news&hl=en-US&gl=US&ceid=US:en"
-            soup = BeautifulSoup(requests.get(rss_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).content, features="xml")
-            headlines = soup.find_all("title")
+            session = get_yf_session()
+            asset = yf.Ticker(ticker_symbol, session=session)
+            news_items = asset.news
             
-            lm = ps.LM()
-            total_polarity, count, matched_count, seen_headlines = 0, 0, 0, set()
+            # --- FOREX FALLBACK PATCH ---
+            if not news_items and "/" in name:
+                base, quote = name.split("/")
+                if base == "USD" or quote == "USD":
+                    news_items = yf.Ticker("DX-Y.NYB", session=session).news
+            # ----------------------------
             
-            for headline in headlines[1:16]:
-                text = headline.text
-                if text.lower() in seen_headlines: continue
-                seen_headlines.add(text.lower())
+            if news_items:
+                analyzer = SentimentIntensityAnalyzer()
+                total_compound = 0.0
+                count = 0
+                seen_headlines = set()
                 
-                score_dict = lm.get_score(lm.tokenize(text))
-                if score_dict.get('Positive', 0) > 0 or score_dict.get('Negative', 0) > 0: matched_count += 1
-                total_polarity += score_dict.get('Polarity', 0)
-                count += 1
-                
-            if count > 0:
-                scaled_score = (total_polarity / count) * 225.0
-                density_ratio = matched_count / count
-                if density_ratio < 0.15: scaled_score *= (density_ratio / 0.15)
-                news_score = max(-100, min(100, scaled_score))
-        except Exception: pass
+                for item in news_items[:15]:
+                    title = item.get('title') or item.get('content', {}).get('title', '')
+                    summary = item.get('summary') or item.get('content', {}).get('summary', '') or item.get('text', '')
+                    
+                    if not title or title.lower() in seen_headlines: continue
+                    seen_headlines.add(title.lower())
+                    
+                    full_text = f"{title}. {summary}" if summary else title
+                    total_compound += analyzer.polarity_scores(full_text)['compound']
+                    count += 1
+                    
+                if count > 0:
+                    raw_mean = total_compound / count
+                    sign = 1 if raw_mean >= 0 else -1
+                    scaled_score = sign * math.sqrt(abs(raw_mean)) * 100.0
+                    news_score = max(-100.0, min(100.0, scaled_score))
+                    
+        except Exception as e: 
+            print(f"[{ticker_symbol}] News Error: {e}")
 
-        # 2. Smart Money (COT Positioning)
-        cot_score = None
+        # =========================================================
+        # 2. SMART MONEY: COT -> PCR FALLBACK (40% Weight)
+        # =========================================================
+        smart_money_score = None
+        smart_money_label = "Smart Money (COT)"
+        
         if "/" in name:
             base, quote = name.split("/")
             b_code, q_code = CURRENCY_COT_MAPPING.get(base), CURRENCY_COT_MAPPING.get(quote)
-            b_score, q_score = get_cftc_score(b_code) if b_code else None, get_cftc_score(q_code) if q_code else None
+            b_score = get_cftc_score(b_code) if b_code else None
+            q_score = get_cftc_score(q_code) if q_code else None
             
-            if quote == "USD" and b_score is not None: cot_score = b_score
-            elif base == "USD" and q_score is not None: cot_score = -q_score 
-            elif b_score is not None and q_score is not None: cot_score = (b_score - q_score) / 2 
+            if quote == "USD" and b_score is not None: smart_money_score = b_score
+            elif base == "USD" and q_score is not None: smart_money_score = -q_score 
+            elif b_score is not None and q_score is not None: smart_money_score = (b_score - q_score) / 2.0 
+            
         elif name in COT_MAPPING:
             cftc_info = COT_MAPPING[name]
             raw_score = get_cftc_score(cftc_info["code"])
-            if raw_score is not None: cot_score = -raw_score if cftc_info["invert"] else raw_score
+            if raw_score is not None: smart_money_score = -raw_score if cftc_info["invert"] else raw_score
 
-        # 3. Smart Money (Put/Call Ratio with Dead-Band & 5-Day SMA)
-        pcr_score = None
-        if name in ETF_OPTIONS_MAPPING:
+        if smart_money_score is None and name in ETF_OPTIONS_MAPPING:
             category = "Commodity" if any(c in name for c in ["Gold", "Silver", "Crude Oil", "Brent Crude", "Natural Gas", "Copper", "Platinum", "Palladium", "Zinc"]) else "Index"
             pcr_score = get_put_call_ratio(ETF_OPTIONS_MAPPING[name], asset_category=category)
+            if pcr_score is not None:
+                smart_money_score = pcr_score
+                smart_money_label = "Smart Money (Put/Call)"
 
-        # 4. Retail Sentiment (IG Contrarian)
+        # =========================================================
+        # 3. RETAIL SENTIMENT: IG CONTRARIAN (40% Weight)
+        # =========================================================
         retail_score = get_ig_retail_sentiment(name, get_ig_session())
 
-        # Master 4-Pillar Dynamic Averaging
-        available_scores = [s for s in (news_score, cot_score, pcr_score, retail_score) if s is not None]
-        final_score = sum(available_scores) / len(available_scores) if available_scores else 0 
+        # =========================================================
+        # MASTER 3-PILLAR DYNAMIC AGGREGATION
+        # =========================================================
+        final_score = 0.0
+        total_weight = 0.0
+        
+        if news_score is not None:
+            final_score += news_score * 0.20
+            total_weight += 0.20
+        if smart_money_score is not None:
+            final_score += smart_money_score * 0.40
+            total_weight += 0.40
+        if retail_score is not None:
+            final_score += retail_score * 0.40
+            total_weight += 0.40
+            
+        final_score = (final_score / total_weight) if total_weight > 0 else 0.0 
 
         details = {
-            "News (Loughran-McDonald)": round(news_score, 2) if news_score is not None else "No Data",
-            "Smart Money (COT)": round(cot_score, 2) if cot_score is not None else "No Data",
-            "Smart Money (Put/Call)": round(pcr_score, 2) if pcr_score is not None else "No Data",
+            "News (Yahoo Finance)": round(news_score, 2) if news_score is not None else "No Data",
+            smart_money_label: round(smart_money_score, 2) if smart_money_score is not None else "No Data",
             "Retail Sentiment (IG)": round(retail_score, 2) if retail_score is not None else "No Data"
         }
-        return max(-100, min(100, final_score)), details
-    except Exception:
-        return 0, {"⚠️ STATUS": "Sentiment API Failure"}
+        return max(-100.0, min(100.0, final_score)), details
+
+    except Exception as e:
+        print(f"Sentiment Engine Error: {e}")
+        return 0.0, {"⚠️ STATUS": "Sentiment API Failure"}
 
 # ============================================================
 # 6. FUNDAMENTALS ENGINE (MACRO TRIAD HYBRID)
@@ -827,9 +837,9 @@ if selected_rows:
                 
     with col2:
         with st.expander("🧠 Sentiment & COT", expanded=True):
-            s_cols = st.columns(4)
+            s_cols = st.columns(3)
             for idx, (key, val) in enumerate(details["Sentiment"].items()): 
-                s_cols[idx % 4].metric(label=key, value=val)
+                s_cols[idx % 3].metric(label=key, value=val)
                 
         with st.expander("📅 Seasonality"):
             st.metric(label="Average Monthly Return", value=f"{details['Seasonality'].get('Avg Monthly Return', 0)}%")
