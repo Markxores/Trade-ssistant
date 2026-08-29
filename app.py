@@ -99,10 +99,17 @@ def calculate_daily_trend_score(ticker_symbol):
     try:
         asset = yf.Ticker(ticker_symbol)
         df = asset.history(period="1y")
+        
+        # --- THE FIX: Scrub Yahoo Finance NaN glitches ---
+        if not df.empty:
+            df = df.dropna(subset=['Close'])
+        # -------------------------------------------------
+        
         if df.empty or len(df) < 200:
             return 0, {"⚠️ STATUS": "Insufficient History"} 
             
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+        # ... rest of the code remains identical ...
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
         df['SMA_200'] = df['Close'].rolling(window=200).mean()
         
