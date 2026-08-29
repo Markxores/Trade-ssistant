@@ -255,7 +255,7 @@ def calculate_seasonality_score(ticker_symbol):
         return 0, {"⚠️ STATUS": "Seasonality API Failure"}
 
 # ============================================================
-# 5. SENTIMENT & COT ENGINE (4-PILLAR HYBRID)
+# 5. SENTIMENT & COT ENGINE (4-PILLAR HYBRID WITH 5-DAY PCR)
 # ============================================================
 COT_MAPPING = {
     # US Stock Indices & Nikkei
@@ -350,6 +350,13 @@ def get_yf_session():
 def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
     try:
         import yfinance as yf
+        import json
+        import os
+        import datetime
+        
+        PCR_DB_FILE = "pcr_history.json"
+        today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+        
         session = get_yf_session()
         asset = yf.Ticker(etf_ticker, session=session)
         expirations = asset.options
@@ -376,31 +383,69 @@ def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
             except Exception:
                 continue
 
-        # Dynamic Dead-Band Neutral Zones
+        # 1. Calculate Today's Raw PCR
+        pcr_oi_today, pcr_vol_today = None, None
+        if total_oi_call > 0 and (total_oi_put + total_oi_call) >= min_threshold:
+            pcr_oi_today = total_oi_put / total_oi_call
+        if total_vol_call > 0 and (total_vol_put + total_vol_call) >= min_threshold:
+            pcr_vol_today = total_vol_put / total_vol_call
+
+        if pcr_oi_today is None and pcr_vol_today is None:
+            return None
+
+        # 2. Local Database: 5-Day Rolling Storage
+        if os.path.exists(PCR_DB_FILE):
+            try:
+                with open(PCR_DB_FILE, 'r') as f:
+                    pcr_db = json.load(f)
+            except Exception: pcr_db = {}
+        else:
+            pcr_db = {}
+
+        if etf_ticker not in pcr_db:
+            pcr_db[etf_ticker] = {}
+
+        # Log today's data (defaults to neutral baseline if one metric is missing)
+        pcr_db[etf_ticker][today_str] = {
+            "oi": pcr_oi_today if pcr_oi_today else 0.85,
+            "vol": pcr_vol_today if pcr_vol_today else 0.85
+        }
+
+        # Purge dates older than 5 trading days
+        sorted_dates = sorted(pcr_db[etf_ticker].keys())
+        if len(sorted_dates) > 5:
+            for d in sorted_dates[:-5]:
+                del pcr_db[etf_ticker][d]
+
+        # Save to disk
+        try:
+            with open(PCR_DB_FILE, 'w') as f:
+                json.dump(pcr_db, f, indent=4)
+        except Exception: pass
+
+        # 3. Calculate the Moving Averages
+        valid_dates = sorted(pcr_db[etf_ticker].keys())
+        avg_pcr_oi = sum(pcr_db[etf_ticker][d]["oi"] for d in valid_dates) / len(valid_dates)
+        avg_pcr_vol = sum(pcr_db[etf_ticker][d]["vol"] for d in valid_dates) / len(valid_dates)
+
+        # 4. Dynamic Dead-Band Scoring
         if asset_category == "Commodity":
             lower_bound, upper_bound = 0.55, 0.95
         else:
             lower_bound, upper_bound = 0.70, 1.10
 
-        def score_contrarian_band(pcr):
-            if lower_bound <= pcr <= upper_bound:
+        def score_contrarian_band(pcr_sma):
+            if lower_bound <= pcr_sma <= upper_bound:
                 return 0.0
-            elif pcr > upper_bound:
+            elif pcr_sma > upper_bound:
                 # Extreme Fear -> Contrarian Bullish
-                return min(100.0, (pcr - upper_bound) * 150.0)
+                return min(100.0, (pcr_sma - upper_bound) * 150.0)
             else:
                 # Extreme Greed -> Contrarian Bearish
-                return max(-100.0, -(lower_bound - pcr) * 285.0)
+                return max(-100.0, -(lower_bound - pcr_sma) * 285.0)
 
-        score_oi = None
-        if total_oi_call > 0 and (total_oi_put + total_oi_call) >= min_threshold:
-            pcr_oi = total_oi_put / total_oi_call
-            score_oi = score_contrarian_band(pcr_oi)
-
-        score_vol = None
-        if total_vol_call > 0 and (total_vol_put + total_vol_call) >= min_threshold:
-            pcr_vol = total_vol_put / total_vol_call
-            score_vol = score_contrarian_band(pcr_vol)
+        score_oi = score_contrarian_band(avg_pcr_oi) if pcr_oi_today else None
+        score_vol = score_contrarian_band(avg_pcr_vol) if pcr_vol_today else None
 
         if score_oi is not None and score_vol is not None:
             return (score_oi * 0.50) + (score_vol * 0.50)
@@ -414,7 +459,7 @@ def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
     except Exception as e:
         print(f"[{etf_ticker}] Options PCR Error: {e}")
         return None
-    
+
 @st.cache_resource(ttl=43200)
 def get_ig_session():
     try:
@@ -486,10 +531,10 @@ def calculate_sentiment_score(ticker_symbol, name):
             raw_score = get_cftc_score(cftc_info["code"])
             if raw_score is not None: cot_score = -raw_score if cftc_info["invert"] else raw_score
 
-        # 3. Smart Money (Put/Call Ratio with Dead-Band)
+        # 3. Smart Money (Put/Call Ratio with Dead-Band & 5-Day SMA)
         pcr_score = None
         if name in ETF_OPTIONS_MAPPING:
-            category = "Commodity" if any(c in name for c in ["Gold", "Silver", "Oil", "Gas", "Copper", "Platinum", "Palladium", "Zinc"]) else "Index"
+            category = "Commodity" if any(c in name for c in ["Gold", "Silver", "Crude Oil", "Brent Crude", "Natural Gas", "Copper", "Platinum", "Palladium", "Zinc"]) else "Index"
             pcr_score = get_put_call_ratio(ETF_OPTIONS_MAPPING[name], asset_category=category)
 
         # 4. Retail Sentiment (IG Contrarian)
