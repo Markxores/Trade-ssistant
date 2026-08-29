@@ -160,7 +160,7 @@ def get_4h_indicators(ticker_symbol):
         delta = df['Close'].diff()
         gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-        df['RSI_14'] = 100 - (100 / (1 + gain / loss))
+        df['RSI_14'] = 100 - (100 / (1 + (gain / loss)))
 
         macd = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = macd - macd.ewm(span=9, adjust=False).mean()
@@ -255,22 +255,43 @@ def calculate_seasonality_score(ticker_symbol):
         return 0, {"⚠️ STATUS": "Seasonality API Failure"}
 
 # ============================================================
-# 5. SENTIMENT & COT ENGINE
+# 5. SENTIMENT & COT ENGINE (4-PILLAR HYBRID)
 # ============================================================
 COT_MAPPING = {
-    "Gold": {"code": "088691", "invert": False}, "Silver": {"code": "084691", "invert": False},
-    "Crude Oil (WTI)": {"code": "067651", "invert": False}
+    # US Stock Indices & Nikkei
+    "US 500 (S&P 500)": {"code": "13874A", "invert": False},
+    "US Tech 100 (Nasdaq)": {"code": "209742", "invert": False},
+    "US 30 (Dow Jones)": {"code": "124603", "invert": False},
+    "US 2000 (Russell 2000)": {"code": "239742", "invert": False},
+    "Japan 225 (Nikkei)": {"code": "240741", "invert": False},
+    
+    # Commodities (COMEX / NYMEX)
+    "Gold": {"code": "088691", "invert": False},
+    "Silver": {"code": "084691", "invert": False},
+    "Copper": {"code": "085692", "invert": False},
+    "Platinum": {"code": "076651", "invert": False},
+    "Palladium": {"code": "075651", "invert": False},
+    "Crude Oil (WTI)": {"code": "067651", "invert": False},
+    "Natural Gas": {"code": "023651", "invert": False}
 }
+
 CURRENCY_COT_MAPPING = {
     "EUR": "099741", "GBP": "096742", "JPY": "097741", "CHF": "092741", 
     "CAD": "090741", "AUD": "232741", "NZD": "112741"
 }
-INDEX_ETF_MAPPING = {
+
+ETF_OPTIONS_MAPPING = {
+    # Stock Indices
     "US 500 (S&P 500)": "SPY", "US Tech 100 (Nasdaq)": "QQQ", "US 30 (Dow Jones)": "DIA",
     "US 2000 (Russell 2000)": "IWM", "UK 100 (FTSE)": "EWU", "Germany 40 (DAX)": "EWG",
     "France 40 (CAC)": "EWQ", "Europe 50 (Euro Stoxx)": "FEZ", "Japan 225 (Nikkei)": "EWJ",
-    "Hong Kong 50 (Hang Seng)": "EWH", "Australia 200 (ASX)": "EWA"
+    "Hong Kong 50 (Hang Seng)": "EWH", "Australia 200 (ASX)": "EWA",
+    
+    # Commodities
+    "Gold": "GLD", "Silver": "SLV", "Crude Oil (WTI)": "USO", "Brent Crude": "BNO",
+    "Natural Gas": "UNG", "Copper": "CPER", "Platinum": "PPLT", "Palladium": "PALL", "Zinc": "DBB"
 }
+
 IG_SENTIMENT_MAPPING = {
     "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY", "USD/CHF": "USDCHF", "USD/CAD": "USDCAD",
     "AUD/USD": "AUDUSD", "NZD/USD": "NZDUSD", "EUR/GBP": "EURGBP", "EUR/JPY": "EURJPY", "GBP/JPY": "GBPJPY",
@@ -311,9 +332,6 @@ def get_cftc_score(cftc_code):
     except Exception: pass
     return None
 
-# ============================================================
-# FIXED: SPOOFED SESSION WITH COOKIE INITIALIZATION
-# ============================================================
 @st.cache_resource
 def get_yf_session():
     import requests
@@ -329,10 +347,7 @@ def get_yf_session():
         pass
     return session
 
-# ============================================================
-# FIXED: REGIME-SWITCHING PUT/CALL RATIO FETCHER
-# ============================================================
-def get_put_call_ratio(etf_ticker, min_threshold=30):
+def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
     try:
         import yfinance as yf
         session = get_yf_session()
@@ -361,29 +376,31 @@ def get_put_call_ratio(etf_ticker, min_threshold=30):
             except Exception:
                 continue
 
-        # HELPER: Regime-Switching Scoring Logic
-        def score_pcr_regime(pcr):
-            neutral_baseline = 0.85
-            
-            if pcr > 1.30:
-                # Extreme Fear (Over-hedged) -> Contrarian Bullish
-                return min(100.0, (pcr - 1.30) * 150.0)
-            elif pcr < 0.50:
-                # Extreme Greed (Under-hedged) -> Contrarian Bearish
-                return max(-100.0, -(0.50 - pcr) * 300.0)
+        # Dynamic Dead-Band Neutral Zones
+        if asset_category == "Commodity":
+            lower_bound, upper_bound = 0.55, 0.95
+        else:
+            lower_bound, upper_bound = 0.70, 1.10
+
+        def score_contrarian_band(pcr):
+            if lower_bound <= pcr <= upper_bound:
+                return 0.0
+            elif pcr > upper_bound:
+                # Extreme Fear -> Contrarian Bullish
+                return min(100.0, (pcr - upper_bound) * 150.0)
             else:
-                # Normal Flow -> Institutional Trend Following
-                return -(pcr - neutral_baseline) * 150.0
+                # Extreme Greed -> Contrarian Bearish
+                return max(-100.0, -(lower_bound - pcr) * 285.0)
 
         score_oi = None
         if total_oi_call > 0 and (total_oi_put + total_oi_call) >= min_threshold:
             pcr_oi = total_oi_put / total_oi_call
-            score_oi = score_pcr_regime(pcr_oi)
+            score_oi = score_contrarian_band(pcr_oi)
 
         score_vol = None
         if total_vol_call > 0 and (total_vol_put + total_vol_call) >= min_threshold:
             pcr_vol = total_vol_put / total_vol_call
-            score_vol = score_pcr_regime(pcr_vol)
+            score_vol = score_contrarian_band(pcr_vol)
 
         if score_oi is not None and score_vol is not None:
             return (score_oi * 0.50) + (score_vol * 0.50)
@@ -422,10 +439,11 @@ def get_ig_retail_sentiment(instrument_name, _ig_service):
         if long_pct == 0 and short_pct == 0: return None
         return -(long_pct - short_pct) 
     except Exception: return None
-            
+
 @st.cache_data(ttl=3600)
 def calculate_sentiment_score(ticker_symbol, name):
     try:
+        # 1. News Sentiment
         news_score = None
         try:
             clean_name = name.split("(")[0].strip()
@@ -453,32 +471,39 @@ def calculate_sentiment_score(ticker_symbol, name):
                 news_score = max(-100, min(100, scaled_score))
         except Exception: pass
 
-        smart_money_score, smart_money_label = None, "Smart Money (COT)"
+        # 2. Smart Money (COT Positioning)
+        cot_score = None
         if "/" in name:
             base, quote = name.split("/")
             b_code, q_code = CURRENCY_COT_MAPPING.get(base), CURRENCY_COT_MAPPING.get(quote)
             b_score, q_score = get_cftc_score(b_code) if b_code else None, get_cftc_score(q_code) if q_code else None
             
-            if quote == "USD" and b_score is not None: smart_money_score = b_score
-            elif base == "USD" and q_score is not None: smart_money_score = -q_score 
-            elif b_score is not None and q_score is not None: smart_money_score = (b_score - q_score) / 2 
+            if quote == "USD" and b_score is not None: cot_score = b_score
+            elif base == "USD" and q_score is not None: cot_score = -q_score 
+            elif b_score is not None and q_score is not None: cot_score = (b_score - q_score) / 2 
         elif name in COT_MAPPING:
             cftc_info = COT_MAPPING[name]
             raw_score = get_cftc_score(cftc_info["code"])
-            if raw_score is not None: smart_money_score = -raw_score if cftc_info["invert"] else raw_score
-        elif name in INDEX_ETF_MAPPING:
-            smart_money_label = "Smart Money (Put/Call)"
-            pcr_score = get_put_call_ratio(INDEX_ETF_MAPPING[name])
-            if pcr_score is not None: smart_money_score = pcr_score
+            if raw_score is not None: cot_score = -raw_score if cftc_info["invert"] else raw_score
 
+        # 3. Smart Money (Put/Call Ratio with Dead-Band)
+        pcr_score = None
+        if name in ETF_OPTIONS_MAPPING:
+            category = "Commodity" if any(c in name for c in ["Gold", "Silver", "Oil", "Gas", "Copper", "Platinum", "Palladium", "Zinc"]) else "Index"
+            pcr_score = get_put_call_ratio(ETF_OPTIONS_MAPPING[name], asset_category=category)
+
+        # 4. Retail Sentiment (IG Contrarian)
         retail_score = get_ig_retail_sentiment(name, get_ig_session())
-        available_scores = [s for s in (news_score, smart_money_score, retail_score) if s is not None]
+
+        # Master 4-Pillar Dynamic Averaging
+        available_scores = [s for s in (news_score, cot_score, pcr_score, retail_score) if s is not None]
         final_score = sum(available_scores) / len(available_scores) if available_scores else 0 
 
         details = {
             "News (Loughran-McDonald)": round(news_score, 2) if news_score is not None else "No Data",
-            smart_money_label: round(smart_money_score, 2) if smart_money_score is not None else "No Data",
-            "Retail Sentiment (IG Contrarian)": round(retail_score, 2) if retail_score is not None else "No Data"
+            "Smart Money (COT)": round(cot_score, 2) if cot_score is not None else "No Data",
+            "Smart Money (Put/Call)": round(pcr_score, 2) if pcr_score is not None else "No Data",
+            "Retail Sentiment (IG)": round(retail_score, 2) if retail_score is not None else "No Data"
         }
         return max(-100, min(100, final_score)), details
     except Exception:
@@ -553,7 +578,6 @@ def update_and_get_ff_surprises():
     scores, counts, has_data = {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}, {curr: 0 for curr in FRED_MACRO_TICKERS.keys()}, {}
     thirty_days_ago = datetime.datetime.now() - datetime.timedelta(days=30)
     
-    import re
     def parse_econ_val(val_str):
         if val_str in [None, "", "None"]: return None
         v = str(val_str).strip().replace(',', '').lower()
@@ -741,16 +765,19 @@ if selected_rows:
     with col1:
         with st.expander("📈 Technical Analysis", expanded=True):
             t_cols = st.columns(3)
-            for idx, (key, val) in enumerate(details["Technicals"].items()): t_cols[idx % 3].metric(label=key, value=val)
+            for idx, (key, val) in enumerate(details["Technicals"].items()): 
+                t_cols[idx % 3].metric(label=key, value=val)
                 
         with st.expander("🌍 Fundamental Macro"):
             f_cols = st.columns(2)
-            for idx, (key, val) in enumerate(details["Fundamentals"].items()): f_cols[idx % 2].metric(label=key, value=val)
+            for idx, (key, val) in enumerate(details["Fundamentals"].items()): 
+                f_cols[idx % 2].metric(label=key, value=val)
                 
     with col2:
         with st.expander("🧠 Sentiment & COT", expanded=True):
-            s_cols = st.columns(3)
-            for idx, (key, val) in enumerate(details["Sentiment"].items()): s_cols[idx % 3].metric(label=key, value=val)
+            s_cols = st.columns(4)
+            for idx, (key, val) in enumerate(details["Sentiment"].items()): 
+                s_cols[idx % 4].metric(label=key, value=val)
                 
         with st.expander("📅 Seasonality"):
             st.metric(label="Average Monthly Return", value=f"{details['Seasonality'].get('Avg Monthly Return', 0)}%")
