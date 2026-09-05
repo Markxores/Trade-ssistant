@@ -418,10 +418,14 @@ def get_put_call_ratio(etf_ticker, asset_category="Index", min_threshold=30):
         avg_pcr_oi = sum(pcr_db[etf_ticker][d]["oi"] for d in valid_dates) / len(valid_dates)
         avg_pcr_vol = sum(pcr_db[etf_ticker][d]["vol"] for d in valid_dates) / len(valid_dates)
 
+        # --- UPGRADE 4: Added Equity Dead-Band Logic ---
         if asset_category == "Commodity":
             lower_bound, upper_bound = 0.55, 0.95
+        elif asset_category == "Equity":
+            lower_bound, upper_bound = 0.50, 0.80
         else:
             lower_bound, upper_bound = 0.70, 1.10
+        # -----------------------------------------------
 
         def score_contrarian_band(pcr_sma):
             if lower_bound <= pcr_sma <= upper_bound: return 0.0
@@ -530,12 +534,20 @@ def calculate_sentiment_score(ticker_symbol, name):
             raw_score = get_cftc_score(cftc_info["code"])
             if raw_score is not None: smart_money_score = -raw_score if cftc_info["invert"] else raw_score
 
-        if smart_money_score is None and name in ETF_OPTIONS_MAPPING:
-            category = "Commodity" if any(c in name for c in ["Gold", "Silver", "Crude Oil", "Brent Crude", "Natural Gas", "Copper", "Platinum", "Palladium", "Zinc"]) else "Index"
-            pcr_score = get_put_call_ratio(ETF_OPTIONS_MAPPING[name], asset_category=category)
-            if pcr_score is not None:
-                smart_money_score = pcr_score
-                smart_money_label = "Smart Money (Put/Call)"
+        # --- UPGRADE 4: Routed individual stocks (like AAPL) to the Equity PCR dead-band ---
+        if smart_money_score is None:
+            if name in ETF_OPTIONS_MAPPING:
+                category = "Commodity" if any(c in name for c in ["Gold", "Silver", "Crude Oil", "Brent Crude", "Natural Gas", "Copper", "Platinum", "Palladium", "Zinc"]) else "Index"
+                pcr_score = get_put_call_ratio(ETF_OPTIONS_MAPPING[name], asset_category=category)
+                if pcr_score is not None:
+                    smart_money_score = pcr_score
+                    smart_money_label = "Smart Money (Put/Call)"
+            elif "/" not in name and "^" not in ticker_symbol and "=" not in ticker_symbol:
+                pcr_score = get_put_call_ratio(ticker_symbol, asset_category="Equity")
+                if pcr_score is not None:
+                    smart_money_score = pcr_score
+                    smart_money_label = "Smart Money (Put/Call)"
+        # ----------------------------------------------------------------------------------
 
         # =========================================================
         # 3. RETAIL SENTIMENT: IG CONTRARIAN (40% Weight)
